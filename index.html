@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EcoRoute – Akıllı Kampüs Atık Yönetimi</title>
+  <meta name="description" content="Kampüs çöp kovalarının doluluk durumunu gerçek zamanlı izleyin ve en verimli toplama rotasını otomatik oluşturun." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ─── NAVBAR ─────────────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <span class="nav-icon">♻️</span>
+      <span class="nav-title">EcoRoute</span>
+      <span class="nav-sub">Akıllı Atık Yönetimi</span>
+    </div>
+    <div class="nav-actions">
+      <div class="live-indicator">
+        <span class="pulse-dot"></span>
+        <span>Canlı İzleme</span>
+      </div>
+      <button id="btnSimulate" class="btn-sim">⚡ Simülasyon Modu</button>
+    </div>
+  </nav>
+
+  <!-- ─── HERO / STATS BAR ─────────────────────────────────── -->
+  <section class="stats-bar">
+    <div class="stat-card" id="statTotalBins">
+      <div class="stat-icon">🗑️</div>
+      <div class="stat-body">
+        <div class="stat-value">3</div>
+        <div class="stat-label">Aktif Çöp Kovası</div>
+      </div>
+    </div>
+    <div class="stat-card" id="statAvgFill">
+      <div class="stat-icon">📊</div>
+      <div class="stat-body">
+        <div class="stat-value" id="valAvgFill">–</div>
+        <div class="stat-label">Ortalama Doluluk</div>
+      </div>
+    </div>
+    <div class="stat-card" id="statCritical">
+      <div class="stat-icon">🚨</div>
+      <div class="stat-body">
+        <div class="stat-value" id="valCritical">–</div>
+        <div class="stat-label">Kritik Düzeyde</div>
+      </div>
+    </div>
+    <div class="stat-card" id="statCollections">
+      <div class="stat-icon">🚛</div>
+      <div class="stat-body">
+        <div class="stat-value" id="valCollections">0</div>
+        <div class="stat-label">Toplama Yapıldı</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── MAIN LAYOUT ─────────────────────────────────────── -->
+  <main class="main-layout">
+
+    <!-- LEFT: Bins grid -->
+    <section class="bins-section">
+      <div class="section-header">
+        <h1 class="section-title">Çöp Kovaları</h1>
+        <p class="section-sub">Anlık doluluk ve atık ayrıştırma bilgisi</p>
+      </div>
+      <div class="bins-grid" id="binsGrid">
+        <!-- Cards injected by JS -->
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+    </section>
+
+    <!-- RIGHT: Route panel -->
+    <aside class="route-section">
+      <div class="route-header">
+        <h2 class="route-title">🗺️ Toplama Rotası</h2>
+        <button id="btnGenerateRoute" class="btn-route">Rota Oluştur</button>
+      </div>
+
+      <div id="routeEmpty" class="route-empty">
+        <div class="route-empty-icon">🛣️</div>
+        <p>Doluluk verilerine göre<br/>otomatik rota oluşturmak için<br/>butona tıklayın.</p>
+      </div>
+
+      <div id="routeList" class="route-list hidden"></div>
+
+      <div id="routeInfo" class="route-info hidden">
+        <div class="route-info-row">
+          <span>🏁 Başlangıç:</span><span>Merkezi Depo</span>
+        </div>
+        <div class="route-info-row">
+          <span>⏱️ Tahmini Süre:</span><span id="routeTime">–</span>
+        </div>
+        <div class="route-info-row">
+          <span>📦 Toplam Atık:</span><span id="routeWaste">–</span>
+        </div>
+        <button id="btnStartRoute" class="btn-start-route">🚛 Rotayı Başlat</button>
+      </div>
+
+      <!-- Collection history -->
+      <div class="history-panel">
+        <h3 class="history-title">📋 Toplama Geçmişi</h3>
+        <div id="historyList" class="history-list">
+          <p class="history-empty">Henüz toplama yapılmadı.</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ─── SIMULATION MODAL ────────────────────────────────── -->
+  <div id="simModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>⚡ Simülasyon Modu</h2>
+        <button id="closeSimModal" class="modal-close">✕</button>
+      </div>
+      <p class="modal-desc">Sanal çöp kovalarını doldurmak ya da boşaltmak için aşağıdaki ayarları kullanın.</p>
+
+      <div class="sim-controls">
+        <label class="sim-label">Kova Seç</label>
+        <select id="simBinSelect" class="sim-select">
+          <option value="all">Tümü</option>
+        </select>
+
+        <label class="sim-label">Atık Türü</label>
+        <select id="simCatSelect" class="sim-select">
+          <option value="all">Tümü</option>
+          <option value="plastic">♳ Plastik</option>
+          <option value="paper">📄 Kağıt</option>
+          <option value="organic">🌿 Organik</option>
+          <option value="glass">🍶 Cam</option>
+          <option value="metal">🥫 Metal</option>
+        </select>
+
+        <label class="sim-label">İşlem</label>
+        <div class="sim-actions-row">
+          <button id="simFill10"  class="btn-sim-action fill">+10%</button>
+          <button id="simFill25"  class="btn-sim-action fill">+25%</button>
+          <button id="simFill50"  class="btn-sim-action fill">+50%</button>
+          <button id="simDrain"   class="btn-sim-action drain">Boşalt</button>
+          <button id="simRandom"  class="btn-sim-action random">🎲 Rastgele</button>
+        </div>
+      </div>
+
+      <div class="sim-auto">
+        <label class="sim-label">Otomatik Artış (5 sn aralıklarla)</label>
+        <div class="sim-toggle-row">
+          <label class="toggle">
+            <input type="checkbox" id="autoFillToggle" />
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="autoFillStatus">Kapalı</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── BIN DETAIL MODAL ────────────────────────────────── -->
+  <div id="binModal" class="modal-overlay hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="binModalTitle">Çöp Kovası Detayı</h2>
+        <button id="closeBinModal" class="modal-close">✕</button>
+      </div>
+      <div id="binModalContent" class="bin-detail-content">
+        <!-- Injected by JS -->
+      </div>
+      <div class="bin-modal-actions">
+        <button id="binCollectBtn" class="btn-collect">🚛 Topla &amp; Sıfırla</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── TOAST ────────────────────────────────────────────── -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
+          onerror="window.supabase=null"></script>
+  <script src="config.js?v=7"></script>
+  <script src="app.js?v=7"></script>
+</body>
+</html>
