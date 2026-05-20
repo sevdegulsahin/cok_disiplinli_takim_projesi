@@ -6,7 +6,7 @@
   <title>EcoRoute – Akıllı Kampüs Atık Yönetimi</title>
   <meta name="description" content="Kampüs çöp kovalarının doluluk durumunu gerçek zamanlı izleyin ve en verimli toplama rotasını otomatik oluşturun." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -57,6 +57,22 @@
       </div>
     </div>
   </section>
+
+  <!-- ─── TAB NAVIGATION ────────────────────────────────────── -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="dashboard">
+      <span class="tab-icon">📊</span> Kontrol Paneli
+    </button>
+    <button class="tab-btn" data-tab="map">
+      <span class="tab-icon">🗺️</span> Kampüs Haritası
+    </button>
+    <button class="tab-btn" data-tab="charts">
+      <span class="tab-icon">📈</span> Doluluk Geçmişi
+    </button>
+  </nav>
+
+  <!-- ─── TAB PANEL: DASHBOARD ─────────────────────────────── -->
+  <div class="tab-panel active" id="panel-dashboard">
 
   <!-- ─── MAIN LAYOUT ─────────────────────────────────────── -->
   <main class="main-layout">
@@ -112,39 +128,92 @@
     </aside>
   </main>
 
+  </div><!-- /panel-dashboard -->
+
+  <!-- ── TAB PANEL: MAP ─────────────────────────────────────── -->
+  <div class="tab-panel" id="panel-map">
+    <section class="map-section">
+      <div class="section-header map-header">
+        <div>
+          <h2 class="section-title">Kampüs Haritası</h2>
+          <p class="section-sub">Kova yoğunluğu, yol ağı ve toplama rotası tek ekranda</p>
+        </div>
+        <button id="btnMapGenerateRoute" class="btn-route map-route-btn">Rota Oluştur</button>
+      </div>
+      <div class="map-overview" aria-label="Harita özeti">
+        <div class="map-metric">
+          <span class="map-metric-label">Ortalama</span>
+          <strong id="mapAvgFill">–</strong>
+        </div>
+        <div class="map-metric">
+          <span class="map-metric-label">Kritik</span>
+          <strong id="mapCritical">–</strong>
+        </div>
+        <div class="map-metric">
+          <span class="map-metric-label">En Yoğun</span>
+          <strong id="mapHotspot">–</strong>
+        </div>
+        <div class="map-metric">
+          <span class="map-metric-label">Rota</span>
+          <strong id="mapRouteStatus">Hazır</strong>
+        </div>
+      </div>
+      <div class="map-container">
+        <div class="map-canvas-shell">
+          <canvas id="campusMap" aria-label="Kampüs atık toplama haritası"></canvas>
+          <div class="map-hint">Kova detayları için marker'a tıklayın</div>
+        </div>
+      </div>
+    </section>
+  </div><!-- /panel-map -->
+
+  <!-- ── TAB PANEL: CHARTS ───────────────────────────────────── -->
+  <div class="tab-panel" id="panel-charts">
+    <section class="charts-section">
+      <div class="section-header">
+        <h2 class="section-title">Doluluk Geçmişi</h2>
+        <p class="section-sub">Çöp kovalarının zaman içindeki doluluk değişimleri</p>
+      </div>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <h3 class="chart-card-title">Genel Doluluk Trendi</h3>
+          <canvas id="chartOverall"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-card-title">Kova Bazlı Karşılaştırma</h3>
+          <canvas id="chartBins"></canvas>
+        </div>
+        <div class="chart-card chart-wide">
+          <h3 class="chart-card-title">Atık Türü Dağılımı</h3>
+          <canvas id="chartCategories"></canvas>
+        </div>
+      </div>
+    </section>
+  </div><!-- /panel-charts -->
+
   <!-- ─── SIMULATION MODAL ────────────────────────────────── -->
   <div id="simModal" class="modal-overlay hidden">
-    <div class="modal">
+    <div class="modal modal-wide">
       <div class="modal-header">
         <h2>⚡ Simülasyon Modu</h2>
         <button id="closeSimModal" class="modal-close">✕</button>
       </div>
-      <p class="modal-desc">Sanal çöp kovalarını doldurmak ya da boşaltmak için aşağıdaki ayarları kullanın.</p>
+      <p class="modal-desc">Her kova için ayrı ayrı doldurma veya boşaltma işlemi yapın.</p>
 
-      <div class="sim-controls">
-        <label class="sim-label">Kova Seç</label>
-        <select id="simBinSelect" class="sim-select">
-          <option value="all">Tümü</option>
-        </select>
+      <label class="sim-label">Atık Türü</label>
+      <select id="simCatSelect" class="sim-select">
+        <option value="all">Tümü</option>
+        <option value="plastic">♳ Plastik</option>
+        <option value="paper">📄 Kağıt</option>
+        <option value="organic">🌿 Organik</option>
+        <option value="glass">🍶 Cam</option>
+        <option value="metal">🥫 Metal</option>
+      </select>
 
-        <label class="sim-label">Atık Türü</label>
-        <select id="simCatSelect" class="sim-select">
-          <option value="all">Tümü</option>
-          <option value="plastic">♳ Plastik</option>
-          <option value="paper">📄 Kağıt</option>
-          <option value="organic">🌿 Organik</option>
-          <option value="glass">🍶 Cam</option>
-          <option value="metal">🥫 Metal</option>
-        </select>
+      <div id="simBinControls" class="sim-bin-controls"></div>
 
-        <label class="sim-label">İşlem</label>
-        <div class="sim-actions-row">
-          <button id="simFill10"  class="btn-sim-action fill">+10%</button>
-          <button id="simFill25"  class="btn-sim-action fill">+25%</button>
-          <button id="simFill50"  class="btn-sim-action fill">+50%</button>
-          <button id="simDrain"   class="btn-sim-action drain">Boşalt</button>
-          <button id="simRandom"  class="btn-sim-action random">🎲 Rastgele</button>
-        </div>
+      <div class="sim-global-row">
+        <button id="simRandom" class="btn-sim-action random wide">🎲 Rastgele Doldur</button>
       </div>
 
       <div class="sim-auto">
@@ -179,9 +248,10 @@
   <!-- ─── TOAST ────────────────────────────────────────────── -->
   <div id="toast" class="toast hidden"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
-          onerror="window.supabase=null"></script>
-  <script src="config.js?v=7"></script>
-  <script src="app.js?v=7"></script>
+          onerror="window.supabase=null" defer></script>
+  <script src="config.js?v=9" defer></script>
+  <script src="app.js?v=9" defer></script>
 </body>
 </html>

@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS collection_events (
   levels_before JSONB NOT NULL DEFAULT '{}'
 );
 
+-- Level history: periodic snapshots of bin fill levels for charts
+CREATE TABLE IF NOT EXISTS bin_level_history (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  recorded_at TIMESTAMPTZ DEFAULT NOW(),
+  snapshot JSONB NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX idx_bin_level_history_time ON bin_level_history (recorded_at DESC);
+
 -- Route plans: generated collection routes
 CREATE TABLE IF NOT EXISTS route_plans (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
@@ -95,3 +104,5 @@ CREATE POLICY "Allow all" ON bins FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON waste_categories FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON collection_events FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON route_plans FOR ALL USING (true) WITH CHECK (true);
+ALTER TABLE bin_level_history ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON bin_level_history FOR ALL USING (true) WITH CHECK (true);
