@@ -4,20 +4,149 @@
 
 let IS_DEMO = true;
 let supabaseClient = null;
+let DATA_MODE = 'demo';
+let remoteHistoryAvailable = true;
+
+function getSupabaseConfig() {
+  return {
+    url: window.SUPABASE_URL || (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : ''),
+    key: window.SUPABASE_ANON_KEY || (typeof SUPABASE_ANON_KEY !== 'undefined' ? SUPABASE_ANON_KEY : ''),
+  };
+}
 
 function connectSupabase() {
-  const hasUrl = typeof SUPABASE_URL !== 'undefined' && !SUPABASE_URL.startsWith('YOUR_');
-  const hasKey = typeof SUPABASE_ANON_KEY !== 'undefined' && !SUPABASE_ANON_KEY.startsWith('YOUR_');
-  const hasLib = !!window.supabase;
-  IS_DEMO = !(hasUrl && hasKey && hasLib);
-  if (!IS_DEMO) {
-    try {
-      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    } catch (e) {
-      console.warn('Supabase başlatılamadı:', e.message);
-      IS_DEMO = true;
+  const { url, key } = getSupabaseConfig();
+  const hasUrl = !!url && !url.startsWith('YOUR_');
+  const hasKey = !!key && !key.startsWith('YOUR_');
+
+  if (!hasUrl || !hasKey) {
+    IS_DEMO = true;
+    DATA_MODE = 'demo';
+    return;
+  }
+
+  try {
+    const isLocal = ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+    if (isLocal) {
+      supabaseClient = createSupabaseRestClient('/api/supabase', '');
+      DATA_MODE = 'proxy';
+    } else if (window.supabase?.createClient) {
+      supabaseClient = window.supabase.createClient(url, key);
+      DATA_MODE = 'supabase-js';
+    } else {
+      supabaseClient = createSupabaseRestClient(url, key);
+      DATA_MODE = 'rest';
+      console.warn('Supabase JS yüklenmedi; REST fallback kullanılacak.');
+    }
+    IS_DEMO = false;
+  } catch (e) {
+    console.warn('Supabase başlatılamadı:', e.message);
+    supabaseClient = null;
+    IS_DEMO = true;
+    DATA_MODE = 'demo';
+  }
+}
+
+function createSupabaseRestClient(baseUrl, anonKey) {
+  const restUrl = baseUrl.startsWith('/')
+    ? baseUrl.replace(/\/$/, '')
+    : `${baseUrl.replace(/\/$/, '')}/rest/v1`;
+  const baseHeaders = { 'Content-Type': 'application/json' };
+  if (anonKey) {
+    baseHeaders.apikey = anonKey;
+    baseHeaders.Authorization = `Bearer ${anonKey}`;
+  }
+
+  class RestQuery {
+    constructor(table) {
+      this.table = table;
+      this.method = 'GET';
+      this.columns = '*';
+      this.body = null;
+      this.filters = [];
+      this.sort = null;
+      this.rowLimit = null;
+      this.head = false;
+      this.count = null;
+    }
+
+    select(columns = '*', opts = {}) {
+      this.method = opts.head ? 'HEAD' : 'GET';
+      this.columns = columns;
+      this.head = !!opts.head;
+      this.count = opts.count || null;
+      return this;
+    }
+
+    insert(payload) {
+      this.method = 'POST';
+      this.body = payload;
+      return this;
+    }
+
+    update(payload) {
+      this.method = 'PATCH';
+      this.body = payload;
+      return this;
+    }
+
+    eq(column, value) {
+      this.filters.push([column, `eq.${value}`]);
+      return this;
+    }
+
+    order(column, opts = {}) {
+      const dir = opts.ascending === false ? 'desc' : 'asc';
+      this.sort = `${column}.${dir}`;
+      return this;
+    }
+
+    limit(count) {
+      this.rowLimit = count;
+      return this;
+    }
+
+    then(resolve, reject) {
+      return this.execute().then(resolve, reject);
+    }
+
+    async execute() {
+      const params = new URLSearchParams();
+      params.set('select', this.columns);
+      this.filters.forEach(([key, val]) => params.append(key, val));
+      if (this.sort) params.set('order', this.sort);
+      if (this.rowLimit !== null) params.set('limit', String(this.rowLimit));
+
+      const headers = { ...baseHeaders };
+      if (this.count) headers.Prefer = `count=${this.count}`;
+      if (this.method === 'POST' || this.method === 'PATCH') {
+        headers.Prefer = 'return=representation';
+      }
+
+      const res = await fetch(`${restUrl}/${this.table}?${params.toString()}`, {
+        method: this.method,
+        headers,
+        body: this.body ? JSON.stringify(this.body) : undefined,
+      });
+
+      if (!res.ok) {
+        const message = await res.text().catch(() => res.statusText);
+        return { data: null, error: { message: message || res.statusText, status: res.status } };
+      }
+
+      if (this.head) {
+        return { data: null, error: null, count: res.headers.get('content-range') };
+      }
+
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      return { data, error: null };
     }
   }
+
+  return {
+    from(table) { return new RestQuery(table); },
+  };
 }
 
 // ── State ────────────────────────────────────────────────────────
@@ -26,6 +155,7 @@ let collectionCount = 0;
 let autoFillTimer = null;
 let selectedBinId = null;
 let currentRoute = [];
+let altRoutes = [];
 let routeAnimOffset = 0;
 let routeAnimFrame = null;
 
@@ -48,67 +178,81 @@ const simModal = document.getElementById('simModal');
 const binModal = document.getElementById('binModal');
 const binModalTitle = document.getElementById('binModalTitle');
 const binModalContent = document.getElementById('binModalContent');
+const dataSourceStatus = document.getElementById('dataSourceStatus');
 const mapAvgFill = document.getElementById('mapAvgFill');
 const mapCritical = document.getElementById('mapCritical');
 const mapHotspot = document.getElementById('mapHotspot');
 const mapRouteStatus = document.getElementById('mapRouteStatus');
 
 // ── Map Config ───────────────────────────────────────────────────
-const DEPOT = { id: 'depot', x: 0.50, y: 0.87, label: 'Merkezi Depo', type: 'depot' };
+// DEPOT alias kept in sync with NODES.depot below
+const DEPOT = { id: 'depot', x: 0.50, y: 0.88, label: 'Merkezi Depo', type: 'depot' };
 
 // ── Road Network Graph ───────────────────────────────────────────
 const NODES = {
-  depot:     { x: 0.50, y: 0.87, label: 'Merkezi Depo', type: 'depot' },
-  kutuphane:{ x: 0.14, y: 0.19, label: 'Kütüphane',      type: 'bin' },
-  ders:      { x: 0.50, y: 0.41, label: 'Ders Binası',    type: 'bin' },
-  yemekhane:{ x: 0.86, y: 0.23, label: 'Yemekhane',      type: 'bin' },
-  nW:        { x: 0.28, y: 0.29, label: '',               type: 'junction' },
-  nE:        { x: 0.72, y: 0.29, label: '',               type: 'junction' },
-  nS:        { x: 0.50, y: 0.65, label: '',               type: 'junction' },
-  nN:        { x: 0.50, y: 0.13, label: '',               type: 'junction' },
+  depot:     { x: 0.50, y: 0.88, label: 'Merkezi Depo', type: 'depot' },
+  kutuphane:{ x: 0.16, y: 0.22, label: 'Kütüphane',      type: 'bin' },
+  ders:      { x: 0.50, y: 0.46, label: 'Ders Binası',    type: 'bin' },
+  yemekhane:{ x: 0.84, y: 0.22, label: 'Yemekhane',      type: 'bin' },
+  nW:        { x: 0.28, y: 0.46, label: '',               type: 'junction' },
+  nE:        { x: 0.72, y: 0.46, label: '',               type: 'junction' },
+  nS:        { x: 0.50, y: 0.68, label: '',               type: 'junction' },
+  nN:        { x: 0.50, y: 0.22, label: '',               type: 'junction' },
 };
-// bin location name → node key mapping
-const BIN_NODE_MAP = {
-  'Kütüphane':   'kutuphane',
-  'Ders Binası': 'ders',
-  'Yemekhane':   'yemekhane',
-};
+function normalizeLocationText(value) {
+  return String(value || '')
+    .toLocaleLowerCase('tr-TR')
+    .replace(/ı/g, 'i')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
 
 function getBinPosition(bin) {
-  const key = BIN_NODE_MAP[bin.location];
-  return key ? NODES[key] : { x: 0.5, y: 0.5 };
+  const key = getBinNodeKey(bin);
+  if (key) return NODES[key];
+
+  const source = `${bin.id || ''}${bin.location || ''}${bin.name || ''}`;
+  let hash = 0;
+  for (let i = 0; i < source.length; i++) hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+  const angle = (hash % 360) * Math.PI / 180;
+  return {
+    x: 0.50 + Math.cos(angle) * 0.28,
+    y: 0.50 + Math.sin(angle) * 0.22,
+  };
 }
 
 function getBinNodeKey(bin) {
-  return BIN_NODE_MAP[bin.location] || null;
+  const text = normalizeLocationText(`${bin.location || ''} ${bin.name || ''}`);
+  if (text.includes('kutuphane')) return 'kutuphane';
+  if (text.includes('ders')) return 'ders';
+  if (text.includes('yemekhane')) return 'yemekhane';
+  return null;
 }
 
-// Road edges: undirected graph with cost & type
+// Road edges: undirected graph (cleaner, grid-like)
 const EDGES = [
-  // ── Main ring (clockwise) ──
-  { f:'depot', t:'nS', cost:11, type:'main' },
-  { f:'nS', t:'nW', cost:17, type:'main' },
-  { f:'nW', t:'kutuphane', cost:9, type:'main' },
-  { f:'nW', t:'ders', cost:13, type:'main' },
-  { f:'ders', t:'nE', cost:13, type:'main' },
-  { f:'nE', t:'yemekhane', cost:9, type:'main' },
-  { f:'nE', t:'nS', cost:21, type:'main' },
-  { f:'nS', t:'depot', cost:7, type:'main' },
+  // Central spine (depot → south → center → north)
+  { f:'depot', t:'nS',   cost: 8,  type:'main' },
+  { f:'nS',    t:'ders', cost: 9,  type:'main' },
+  { f:'ders',  t:'nN',   cost: 10, type:'main' },
 
-  // ── Inner ring / shortcuts ──
-  { f:'kutuphane', t:'nN', cost:7, type:'main' },
-  { f:'nN', t:'yemekhane', cost:16, type:'main' },
-  { f:'nN', t:'ders', cost:14, type:'main' },
-  { f:'ders', t:'nS', cost:14, type:'main' },
+  // West arm
+  { f:'nS', t:'nW',         cost: 8,  type:'main' },
+  { f:'nW', t:'ders',       cost: 7,  type:'main' },
+  { f:'nW', t:'kutuphane',  cost: 11, type:'main' },
+  { f:'nN', t:'kutuphane',  cost: 10, type:'side' },
 
-  // ── Side roads (alternate routes, higher cost) ──
-  { f:'depot', t:'ders', cost:24, type:'side' },
-  { f:'depot', t:'nS', cost:18, type:'side' },
-  { f:'kutuphane', t:'ders', cost:26, type:'side' },
-  { f:'ders', t:'yemekhane', cost:28, type:'side' },
-  { f:'nW', t:'nE', cost:30, type:'side' },
-  { f:'nN', t:'nW', cost:18, type:'side' },
-  { f:'nN', t:'nE', cost:18, type:'side' },
+  // East arm
+  { f:'nS', t:'nE',         cost: 8,  type:'main' },
+  { f:'nE', t:'ders',       cost: 7,  type:'main' },
+  { f:'nE', t:'yemekhane',  cost: 11, type:'main' },
+  { f:'nN', t:'yemekhane',  cost: 10, type:'side' },
+
+  // Bypass: outer side road around campus (alternate route)
+  { f:'depot', t:'nW',  cost: 18, type:'side' },
+  { f:'depot', t:'nE',  cost: 18, type:'side' },
 ];
 
 let adjList = {};
@@ -130,26 +274,52 @@ let mapCanvas, mapCtx, mapW, mapH = 420;
 async function init() {
   connectSupabase();
   renderBinsOffline();
+  updateDataSourceStatus('loading', 'DB kontrol ediliyor');
   setupEventListeners();
   initMap();
 
   if (!IS_DEMO) {
-    await loadBinsFromSupabase();
+    const loaded = await loadBinsFromSupabase();
+    if (!loaded) {
+      IS_DEMO = true;
+      DATA_MODE = 'demo';
+      updateDataSourceStatus('demo', 'Demo veri');
+      loadLocalHistory();
+      startHistorySnapshot();
+      return;
+    }
     setupRealtime();
-    loadCollectionHistory();
-    ensureHistoryTable();
+    await loadCollectionHistory();
+    await ensureHistoryTable();
     await loadHistoryData();
     startHistorySnapshot();
   } else {
+    updateDataSourceStatus('demo', 'Demo veri');
     loadLocalHistory();
     startHistorySnapshot();
   }
 }
 
+function updateDataSourceStatus(kind, text) {
+  if (!dataSourceStatus) return;
+  dataSourceStatus.textContent = text;
+  dataSourceStatus.className = `data-source-status ${kind}`;
+}
+
+function startAppWhenReady() {
+  setTimeout(() => {
+    init().catch(e => {
+      console.error('Uygulama başlatılamadı:', e);
+      updateDataSourceStatus('demo', 'Başlatma hatası');
+      showToast(`Başlatma hatası: ${e.message}`, 'error');
+    });
+  }, 0);
+}
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', startAppWhenReady, { once: true });
 } else {
-  init();
+  startAppWhenReady();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -180,26 +350,31 @@ function initMap() {
     });
   });
 
+  function hitTestBin(mx, my) {
+    for (const bin of bins) {
+      const p = getBinPosition(bin);
+      const cx = p.x * mapW, cy = p.y * mapH;
+      // Building hit area (~70 wide x 58 tall)
+      if (Math.abs(mx - cx) < 62 && Math.abs(my - cy) < 30) return bin;
+      // Marker hit area (above building)
+      const my2 = cy - 58 / 2 - 22;
+      if (Math.hypot(mx - cx, my - my2) < 22) return bin;
+    }
+    return null;
+  }
   mapCanvas.addEventListener('click', e => {
     const rect = mapCanvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width * mapW;
     const my = (e.clientY - rect.top) / rect.height * mapH;
-    for (const bin of bins) {
-      const p = getBinPosition(bin);
-      if (Math.hypot(mx - p.x * mapW, my - p.y * mapH) < 24) { openBinDetail(bin.id); return; }
-    }
+    const bin = hitTestBin(mx, my);
+    if (bin) openBinDetail(bin.id);
   });
   mapCanvas.addEventListener('mousemove', e => {
     if (!mapCanvas) return;
     const rect = mapCanvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width * mapW;
     const my = (e.clientY - rect.top) / rect.height * mapH;
-    let over = false;
-    for (const bin of bins) {
-      const p = getBinPosition(bin);
-      if (Math.hypot(mx - p.x * mapW, my - p.y * mapH) < 24) { over = true; break; }
-    }
-    mapCanvas.style.cursor = over ? 'pointer' : 'default';
+    mapCanvas.style.cursor = hitTestBin(mx, my) ? 'pointer' : 'default';
   });
 }
 
@@ -219,22 +394,43 @@ function resizeMapCanvas() {
 }
 
 // ── Bezier control point for a curved road between two nodes ──
-function roadControlPoint(a, b, curvature = 0.35) {
-  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  // perpendicular offset
+// Direction-independent: same control point regardless of edge orientation
+function roadControlPoint(a, b, curvature = 0.12) {
+  // Normalize endpoint order so curvature direction is deterministic
+  let p1 = a, p2 = b;
+  if (p1.x > p2.x || (p1.x === p2.x && p1.y > p2.y)) { p1 = b; p2 = a; }
+  const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
   const px = -dy * curvature, py = dx * curvature;
   return { x: mx + px, y: my + py };
 }
 
+// Returns perpendicular unit vector in pixel-space for an edge
+function edgePerpPx(nA, nB) {
+  const dx = (nB.x - nA.x) * mapW;
+  const dy = (nB.y - nA.y) * mapH;
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: -dy / len, y: dx / len };
+}
+
 function drawRoad(ctx, nA, nB, style) {
+  drawRoadOffset(ctx, nA, nB, 0, style);
+}
+
+// Draw a curved line between two nodes with an optional perpendicular offset (px)
+function drawRoadOffset(ctx, nA, nB, offsetPx, style) {
   const ax = nA.x * mapW, ay = nA.y * mapH;
   const bx = nB.x * mapW, by = nB.y * mapH;
-  const cp = roadControlPoint(nA, nB, style.type === 'main' ? 0.25 : 0.4);
+  const cp = roadControlPoint(nA, nB, style.curvature ?? (style.type === 'main' ? 0.10 : 0.18));
+  let ox = 0, oy = 0;
+  if (offsetPx) {
+    const perp = edgePerpPx(nA, nB);
+    ox = perp.x * offsetPx; oy = perp.y * offsetPx;
+  }
 
   ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.quadraticCurveTo(cp.x * mapW, cp.y * mapH, bx, by);
+  ctx.moveTo(ax + ox, ay + oy);
+  ctx.quadraticCurveTo(cp.x * mapW + ox, cp.y * mapH + oy, bx + ox, by + oy);
   ctx.strokeStyle = style.color;
   ctx.lineWidth = style.width;
   ctx.lineCap = 'round';
@@ -260,6 +456,67 @@ function buildShortestEdgePath(nodeKeys) {
   return edges;
 }
 
+// ── Route palettes ──────────────────────────────────────────────
+// Per-leg colors (depot→bin1 = leg 0, etc.)
+const LEG_COLORS = [
+  '#22c55e', // green
+  '#06b6d4', // cyan
+  '#3b82f6', // blue
+  '#a855f7', // purple
+  '#ec4899', // pink
+  '#f97316', // orange
+  '#facc15', // yellow
+];
+// Alternative route styles (color, lateral offset px, dash pattern)
+const ALT_STYLES = [
+  { color: '#facc15', offset:  12, dash: [7, 5] },   // yellow, right
+  { color: '#06b6d4', offset: -12, dash: [5, 6] },   // cyan,   left
+  { color: '#ec4899', offset:  22, dash: [3, 4] },   // pink,   far right
+  { color: '#a855f7', offset: -22, dash: [9, 4] },   // purple, far left
+];
+
+function hexToRgba(hex, alpha = 1) {
+  const m = hex.replace('#', '');
+  const r = parseInt(m.slice(0, 2), 16);
+  const g = parseInt(m.slice(2, 4), 16);
+  const b = parseInt(m.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ── Edge cost labels ──
+function drawEdgeCostLabels(ctx) {
+  const seen = new Set();
+  for (const e of EDGES) {
+    const key = [e.f, e.t].sort().join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const nA = NODES[e.f], nB = NODES[e.t];
+    const cp = roadControlPoint(nA, nB, e.type === 'main' ? 0.10 : 0.18);
+    const cx = cp.x * mapW, cy = cp.y * mapH;
+    const label = `${e.cost}m`;
+
+    ctx.font = '700 9px Sora, sans-serif';
+    const tw = Math.ceil(ctx.measureText(label).width);
+    const padX = 5, padY = 3;
+    const w = tw + padX * 2;
+    const h = 9 + padY * 2;
+
+    // Pill background
+    ctx.fillStyle = 'rgba(14,12,10,0.85)';
+    ctx.strokeStyle = 'rgba(255,240,220,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    roundedRect(ctx, cx - w / 2, cy - h / 2, w, h, 4);
+    ctx.fill(); ctx.stroke();
+
+    // Text
+    ctx.fillStyle = '#c9b896';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, cy + 0.5);
+  }
+}
+
 // ── Full map render ──
 function drawMap() {
   if (!mapCtx) return;
@@ -268,34 +525,50 @@ function drawMap() {
   // ── Background layers ──
   ctx.clearRect(0, 0, W, H);
 
-  // Base dark
-  ctx.fillStyle = '#0c0a09';
+  // Base earth tone
+  const baseGrad = ctx.createLinearGradient(0, 0, 0, H);
+  baseGrad.addColorStop(0, '#0d0c0a');
+  baseGrad.addColorStop(1, '#100e0c');
+  ctx.fillStyle = baseGrad;
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle grass/terrain patches
-  [
-    { x: 0.12, y: 0.12, r: 0.13 },
-    { x: 0.82, y: 0.15, r: 0.11 },
-    { x: 0.30, y: 0.70, r: 0.10 },
-    { x: 0.70, y: 0.72, r: 0.09 },
-    { x: 0.50, y: 0.28, r: 0.08 },
-  ].forEach(g => {
-    const grd = ctx.createRadialGradient(g.x * W, g.y * H, 0, g.x * W, g.y * H, g.r * Math.min(W, H));
-    grd.addColorStop(0, 'rgba(34,60,34,0.07)');
-    grd.addColorStop(1, 'rgba(12,10,9,0)');
+  // Grass / park patches (organic blobs) with subtle texture
+  const parks = [
+    { x: 0.10, y: 0.10, rx: 0.14, ry: 0.10 },
+    { x: 0.90, y: 0.10, rx: 0.12, ry: 0.10 },
+    { x: 0.20, y: 0.78, rx: 0.16, ry: 0.10 },
+    { x: 0.80, y: 0.78, rx: 0.16, ry: 0.10 },
+    { x: 0.50, y: 0.08, rx: 0.20, ry: 0.06 },
+  ];
+  parks.forEach(g => {
+    const grd = ctx.createRadialGradient(g.x * W, g.y * H, 0, g.x * W, g.y * H, g.rx * W);
+    grd.addColorStop(0, 'rgba(38,72,42,0.20)');
+    grd.addColorStop(0.6, 'rgba(38,72,42,0.08)');
+    grd.addColorStop(1, 'rgba(38,72,42,0)');
     ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, W, H);
+    ctx.beginPath();
+    ctx.ellipse(g.x * W, g.y * H, g.rx * W, g.ry * H, 0, 0, Math.PI * 2);
+    ctx.fill();
   });
 
-  // Paved area hint (lighter around roads)
-  ctx.fillStyle = 'rgba(180,160,130,0.03)';
-  ctx.fillRect(W * 0.06, H * 0.06, W * 0.88, H * 0.86);
+  // Small "trees" dots inside park areas (deterministic — no jitter on redraw)
+  ctx.fillStyle = 'rgba(80,140,80,0.18)';
+  const treeSpots = [
+    [0.06,0.10,3.4],[0.10,0.16,3.0],[0.14,0.07,3.8],[0.04,0.18,3.2],
+    [0.94,0.10,3.6],[0.90,0.17,3.2],[0.96,0.16,3.0],
+    [0.16,0.80,3.5],[0.20,0.74,3.1],[0.24,0.82,3.7],[0.12,0.78,3.3],
+    [0.80,0.80,3.5],[0.84,0.74,3.1],[0.78,0.84,3.4],[0.88,0.78,3.3],
+    [0.42,0.06,2.8],[0.58,0.06,3.0],[0.50,0.04,3.4],
+  ];
+  treeSpots.forEach(([tx, ty, r]) => {
+    ctx.beginPath();
+    ctx.arc(tx * W, ty * H, r, 0, Math.PI * 2);
+    ctx.fill();
+  });
 
-  // Fine grid
-  ctx.strokeStyle = 'rgba(255,245,220,0.02)';
-  ctx.lineWidth = 0.5;
-  for (let x = 0; x < W; x += 24) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = 0; y < H; y += 24) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // Subtle paving texture
+  ctx.fillStyle = 'rgba(255,245,220,0.012)';
+  ctx.fillRect(W * 0.06, H * 0.06, W * 0.88, H * 0.86);
 
   // ── Draw ALL road edges first (underneath everything) ──
   const drawnEdges = new Set();
@@ -307,165 +580,243 @@ function drawMap() {
     const nA = NODES[e.f], nB = NODES[e.t];
     const isMain = e.type === 'main';
 
-    // Road "bed" (slightly wider, darker underneath)
+    // Road "bed" / shoulder
     drawRoad(ctx, nA, nB, {
-      color: isMain ? 'rgba(140,110,70,0.18)' : 'rgba(100,80,55,0.12)',
-      width: isMain ? 9 : 5,
+      color: isMain ? 'rgba(120,95,60,0.22)' : 'rgba(90,72,52,0.16)',
+      width: isMain ? 12 : 7,
       type: e.type,
     });
     // Road surface
     drawRoad(ctx, nA, nB, {
-      color: isMain ? '#b8956a' : '#8a7356',
-      width: isMain ? 5 : 3,
+      color: isMain ? '#9c7e58' : '#7a6450',
+      width: isMain ? 6 : 3.5,
       type: e.type,
     });
-    // Center line (dashed white)
+    // Center dashed line (only on main roads)
     if (isMain) {
       drawRoad(ctx, nA, nB, {
-        color: 'rgba(255,250,240,0.12)',
+        color: 'rgba(255,250,235,0.18)',
         width: 1,
-        dash: [6, 8],
+        dash: [8, 10],
         type: e.type,
       });
     }
   }
 
   // ── Junction nodes (small circles at intersections) ──
-  Object.entries(NODES).forEach(([key, node]) => {
+  Object.entries(NODES).forEach(([_, node]) => {
     if (node.type === 'junction') {
       const cx = node.x * W, cy = node.y * H;
       ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = '#a08560';
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#8a7050';
       ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,240,220,0.1)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   });
 
-  // ── Buildings ──
+  // ── Buildings (more detailed, campus-like) ──
   bins.forEach(bin => {
     const p = getBinPosition(bin);
     const cx = p.x * W, cy = p.y * H;
-    const bw = Math.min(118, W * 0.16), bh = 48;
+    const bw = Math.min(124, W * 0.17), bh = 58;
 
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    // Drop shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.40)';
     ctx.beginPath();
-    roundedRect(ctx, cx - bw / 2 + 3, cy - bh / 2 + 3, bw, bh, 8);
+    roundedRect(ctx, cx - bw / 2 + 3, cy - bh / 2 + 4, bw, bh, 9);
     ctx.fill();
 
     // Building body
-    ctx.fillStyle = '#1c1916';
-    ctx.strokeStyle = 'rgba(200,175,135,0.1)';
+    ctx.fillStyle = '#22201c';
+    ctx.strokeStyle = 'rgba(200,175,135,0.18)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    roundedRect(ctx, cx - bw / 2, cy - bh / 2, bw, bh, 8);
+    roundedRect(ctx, cx - bw / 2, cy - bh / 2, bw, bh, 9);
     ctx.fill(); ctx.stroke();
 
-    // Roof accent line
-    ctx.strokeStyle = 'rgba(184,149,106,0.25)';
-    ctx.lineWidth = 1;
+    // Roof strip (slightly lighter)
+    ctx.fillStyle = 'rgba(184,149,106,0.18)';
     ctx.beginPath();
-    ctx.moveTo(cx - bw / 2 + 6, cy - bh / 2 + 3);
-    ctx.lineTo(cx + bw / 2 - 6, cy - bh / 2 + 3);
-    ctx.stroke();
+    roundedRect(ctx, cx - bw / 2 + 3, cy - bh / 2 + 3, bw - 6, 8, 4);
+    ctx.fill();
 
-    // Label above building
-    ctx.fillStyle = '#9a8b7a';
-    ctx.font = '600 11px Sora, sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-    ctx.fillText(bin.location, cx, cy - bh / 2 - 5);
+    // Windows grid
+    const winRows = 2, winCols = 4;
+    const padX = 10, padY = 18;
+    const winAreaW = bw - padX * 2, winAreaH = bh - padY - 8;
+    const winW = (winAreaW - (winCols - 1) * 4) / winCols;
+    const winH = (winAreaH - (winRows - 1) * 4) / winRows;
+    for (let r = 0; r < winRows; r++) {
+      for (let c = 0; c < winCols; c++) {
+        const wx = cx - bw/2 + padX + c * (winW + 4);
+        const wy = cy - bh/2 + padY + r * (winH + 4);
+        ctx.fillStyle = (r + c) % 3 === 0 ? 'rgba(255,210,140,0.22)' : 'rgba(140,150,170,0.12)';
+        ctx.fillRect(wx, wy, winW, winH);
+      }
+    }
+
+    // Label below building (clearer)
+    ctx.fillStyle = '#c4b9a8';
+    ctx.font = '700 11px Sora, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(bin.location, cx, cy + bh / 2 + 5);
   });
 
-  // ── Alternative routes (faded, shown when route exists) ──
+  // ── Edge cost labels (rendered above the road, below routes) ──
+  drawEdgeCostLabels(ctx);
+
+  // ── Alternative routes (drawn with lateral offset to avoid overlap) ──
   if (currentRoute.length > 0 && altRoutes.length > 0) {
     altRoutes.forEach((alt, idx) => {
-      alt.path.forEach((seg, si) => {
+      const meta = ALT_STYLES[idx % ALT_STYLES.length];
+      alt.path.forEach(seg => {
         const nA = NODES[seg.from], nB = NODES[seg.to];
-        drawRoad(ctx, nA, nB, {
-          color: idx === 0 ? 'rgba(250,204,21,0.22)' : 'rgba(96,165,250,0.18)',
-          width: 2.5,
-          dash: [4, 5],
-          type: seg.type,
+        // Outline for legibility
+        drawRoadOffset(ctx, nA, nB, meta.offset, {
+          color: 'rgba(0,0,0,0.4)', width: 4.5,
+          dash: meta.dash, type: seg.type, curvature: 0.05,
+        });
+        drawRoadOffset(ctx, nA, nB, meta.offset, {
+          color: meta.color, width: 2.6, dash: meta.dash,
+          type: seg.type, curvature: 0.05,
         });
       });
     });
   }
 
-  // ── Active route (animated green dashed on top) ──
+  // ── Active route (per-leg colored, on top of road) ──
   if (currentRoute.length > 0) {
-    const rpNodes = routeNodeOrder(currentRoute);
-    const routeEdges = buildShortestEdgePath(rpNodes);
-    routeEdges.forEach(seg => {
-      const nA = NODES[seg.from], nB = NODES[seg.to];
-      drawRoad(ctx, nA, nB, {
-        color: '#22c55e',
-        width: 4,
-        dash: [10, 6],
-        dashOffset: -routeAnimOffset,
-        type: seg.type,
-      });
-    });
+    const rpNodes = routeNodeOrder(currentRoute); // [depot, b1, b2, ..., depot]
 
+    // Draw each leg with its own color
+    for (let legIdx = 0; legIdx < rpNodes.length - 1; legIdx++) {
+      const graphPath = shortestGraphPath(rpNodes[legIdx], rpNodes[legIdx + 1]);
+      if (!graphPath || graphPath.length < 2) continue;
+      const legColor = LEG_COLORS[legIdx % LEG_COLORS.length];
+
+      for (let i = 0; i < graphPath.length - 1; i++) {
+        const nA = NODES[graphPath[i]], nB = NODES[graphPath[i + 1]];
+        // Glow halo (leg color, transparent)
+        drawRoad(ctx, nA, nB, { color: hexToRgba(legColor, 0.22), width: 9 });
+        // Solid base
+        drawRoad(ctx, nA, nB, { color: legColor, width: 4.6 });
+        // Animated dashes for direction (dark on top of solid)
+        drawRoad(ctx, nA, nB, {
+          color: 'rgba(0,0,0,0.55)', width: 4.6,
+          dash: [10, 10], dashOffset: -routeAnimOffset,
+        });
+      }
+    }
+
+    // Leg badge with cost — at curve apex of each leg
     for (let i = 0; i < rpNodes.length - 1; i++) {
       const graphPath = shortestGraphPath(rpNodes[i], rpNodes[i + 1]);
       if (!graphPath || graphPath.length < 2) continue;
       const first = NODES[graphPath[0]], last = NODES[graphPath[graphPath.length - 1]];
-      const cp = roadControlPoint(first, last, 0.28);
+      const cp = roadControlPoint(first, last, 0.10);
       const legCost = graphPathCost(graphPath);
+      const legColor = LEG_COLORS[i % LEG_COLORS.length];
 
-      // Direction dot with leg number
-      ctx.beginPath();
-      ctx.arc(cp.x * W, cp.y * H, 6, 0, Math.PI * 2);
-      ctx.fillStyle = '#22c55e';
-      ctx.fill();
-      ctx.font = 'bold 9px Sora, sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // Pill: number badge + cost label
+      const cx2 = cp.x * W, cy2 = cp.y * H;
+      const cntLabel = String(i + 1);
+      const costLabel = `${legCost}m`;
+
+      ctx.font = '800 9.5px Sora, sans-serif';
+      const costW = Math.ceil(ctx.measureText(costLabel).width);
+      const pillW = 18 + costW + 12;
+      const pillH = 18;
+
+      // Pill background
       ctx.fillStyle = '#0c0a09';
-      ctx.fillText(String(i + 1), cp.x * W, cp.y * H);
+      ctx.strokeStyle = legColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      roundedRect(ctx, cx2 - pillW / 2, cy2 - pillH / 2, pillW, pillH, 9);
+      ctx.fill(); ctx.stroke();
 
-      ctx.font = '600 9px Figtree, sans-serif';
-      ctx.fillStyle = 'rgba(196,240,196,0.78)';
-      ctx.fillText(`${legCost}m`, cp.x * W, cp.y * H + 15);
+      // Number circle
+      ctx.beginPath();
+      ctx.arc(cx2 - pillW / 2 + 9, cy2, 7, 0, Math.PI * 2);
+      ctx.fillStyle = legColor;
+      ctx.fill();
+      ctx.fillStyle = '#0c0a09';
+      ctx.font = '800 9px Sora, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(cntLabel, cx2 - pillW / 2 + 9, cy2 + 0.5);
+
+      // Cost label
+      ctx.fillStyle = legColor;
+      ctx.font = '700 9.5px Sora, sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(costLabel, cx2 - pillW / 2 + 19, cy2 + 0.5);
     }
 
+    // Stop badges next to each bin in the route — colored by which leg STARTS at this bin (leg i+1 starts at stop i+1)
     currentRoute.forEach((bin, i) => {
       const p = getBinPosition(bin);
-      const bx = p.x * W + 20, by = p.y * H - 23;
+      const bx = p.x * W + 26, by = p.y * H - 22;
+      // Color of leg arriving at this stop = leg i (depot→bin1 is leg 0)
+      const inboundColor = LEG_COLORS[i % LEG_COLORS.length];
       ctx.beginPath();
-      ctx.arc(bx, by, 10, 0, Math.PI * 2);
-      ctx.fillStyle = '#22c55e';
+      ctx.arc(bx, by, 11, 0, Math.PI * 2);
+      ctx.fillStyle = inboundColor;
       ctx.fill();
       ctx.strokeStyle = '#0c0a09';
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.fillStyle = '#0c0a09';
-      ctx.font = '800 10px Sora, sans-serif';
+      ctx.font = '800 11px Sora, sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(String(i + 1), bx, by);
     });
   }
 
-  // ── Bin markers (on top of everything) ──
+  // ── Bin markers (positioned above building like a sign) ──
   bins.forEach(bin => {
     const p = getBinPosition(bin);
     const cx = p.x * W, cy = p.y * H;
     const fill = avgFill(bin), status = binStatus(fill);
     const color = status === 'critical' ? '#ef4444' : status === 'warning' ? '#f59e0b' : '#22c55e';
 
+    // Marker sits just above the building
+    const my = cy - 58 / 2 - 22;
+    const mx = cx;
+
     // Outer glow
-    ctx.beginPath(); ctx.arc(cx, cy, 24, 0, Math.PI * 2);
-    ctx.fillStyle = color + '14'; ctx.fill();
+    ctx.beginPath(); ctx.arc(mx, my, 22, 0, Math.PI * 2);
+    ctx.fillStyle = color + '18'; ctx.fill();
 
     // Ring
-    ctx.beginPath(); ctx.arc(cx, cy, 19, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(mx, my, 17, 0, Math.PI * 2);
     ctx.fillStyle = '#12100e'; ctx.fill();
     ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
 
+    // Pointer triangle connecting marker to building
+    ctx.beginPath();
+    ctx.moveTo(mx - 5, my + 14);
+    ctx.lineTo(mx + 5, my + 14);
+    ctx.lineTo(mx, my + 21);
+    ctx.closePath();
+    ctx.fillStyle = '#12100e';
+    ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mx - 5, my + 14);
+    ctx.lineTo(mx, my + 21);
+    ctx.lineTo(mx + 5, my + 14);
+    ctx.stroke();
+
     // Fill % text
     ctx.fillStyle = color;
-    ctx.font = 'bold 12px Sora, sans-serif';
+    ctx.font = 'bold 11px Sora, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(fill + '%', cx, cy);
+    ctx.fillText(fill + '%', mx, my);
   });
 
   // ── Depot marker ──
@@ -488,32 +839,47 @@ function drawMap() {
 }
 
 function drawLegend(ctx, W) {
-  const lx = W - 148, ly = 12, lw = 138, lh = 114;
+  // Items rows: status (3) + roads (2) + best route (1) + alts (up to 3) + legs (1)
+  const altCount = Math.min(altRoutes.length, ALT_STYLES.length);
+  const baseRows = 7;  // 3 status + 2 road + 1 best route + 1 leg-color sample
+  const rows = baseRows + altCount;
+  const lw = 168;
+  const lh = 18 + rows * 13;
+  const lx = W - lw - 10, ly = 12;
 
   // Panel bg
   ctx.fillStyle = 'rgba(14,12,10,0.92)';
   ctx.beginPath();
   roundedRect(ctx, lx, ly, lw, lh, 7);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,245,220,0.06)';
+  ctx.strokeStyle = 'rgba(255,245,220,0.08)';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  ctx.font = '600 9px Sora, sans-serif';
+  ctx.font = '700 9.5px Sora, sans-serif';
+  ctx.fillStyle = '#c9b896';
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('Lejant', lx + 8, ly + 10);
+
+  ctx.font = '600 9px Sora, sans-serif';
 
   const items = [
-    { color: '#22c55e', label: 'Normal (<%55)',   type: 'dot' },
-    { color: '#f59e0b', label: 'Uyarı (%55–80)',  type: 'dot' },
-    { color: '#ef4444', label: 'Kritik (%80+)',   type: 'dot' },
-    { color: '#b8956a', label: 'Ana Yol',       type: 'road-main' },
-    { color: '#8a7356', label: 'Yan Yol',       type: 'road-side' },
-    { color: '#22c55e', label: 'Rota (en kısa)',  type: 'route' },
-    { color: '#fac832', label: 'Alternatif rota',type: 'route-alt' },
+    { color: '#22c55e', label: 'Normal (<%55)',     type: 'dot' },
+    { color: '#f59e0b', label: 'Uyarı (%55–80)',   type: 'dot' },
+    { color: '#ef4444', label: 'Kritik (%80+)',     type: 'dot' },
+    { color: '#9c7e58', label: 'Ana Yol',          type: 'road-main' },
+    { color: '#7a6450', label: 'Yan Yol',          type: 'road-side' },
+    { color: '#22c55e', label: 'En kısa rota',     type: 'route' },
+    { color: '#22c55e', label: 'Bacak renkleri (1,2,3)', type: 'legs' },
   ];
+  // Append alternative rows
+  for (let i = 0; i < altCount; i++) {
+    const meta = ALT_STYLES[i];
+    items.push({ color: meta.color, label: `Alternatif ${i + 1}`, type: 'route-alt', dash: meta.dash });
+  }
 
   items.forEach((it, i) => {
-    const iy = ly + 15 + i * 13;
+    const iy = ly + 22 + i * 13;
     if (it.type === 'dot') {
       ctx.beginPath(); ctx.arc(lx + 14, iy, 4.5, 0, Math.PI * 2);
       ctx.fillStyle = it.color + '28'; ctx.fill();
@@ -525,11 +891,21 @@ function drawLegend(ctx, W) {
       ctx.strokeStyle = it.color; ctx.lineWidth = 2; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(lx + 7, iy); ctx.lineTo(lx + 27, iy); ctx.stroke();
     } else if (it.type === 'route') {
-      ctx.strokeStyle = it.color; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = it.color; ctx.lineWidth = 2.5; ctx.setLineDash([]);
       ctx.beginPath(); ctx.moveTo(lx + 7, iy); ctx.lineTo(lx + 27, iy); ctx.stroke();
-      ctx.setLineDash([]);
+    } else if (it.type === 'legs') {
+      // Render 3 short colored segments
+      for (let li = 0; li < 3; li++) {
+        ctx.strokeStyle = LEG_COLORS[li];
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(lx + 7 + li * 7, iy);
+        ctx.lineTo(lx + 7 + li * 7 + 6, iy);
+        ctx.stroke();
+      }
     } else if (it.type === 'route-alt') {
-      ctx.strokeStyle = it.color; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = it.color; ctx.lineWidth = 1.8;
+      ctx.setLineDash(it.dash || [3, 3]);
       ctx.beginPath(); ctx.moveTo(lx + 7, iy); ctx.lineTo(lx + 27, iy); ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -546,7 +922,6 @@ function roundedRect(ctx, x, y, w, h, r) {
 }
 
 // ── Route animation ──
-let altRoutes = [];
 
 function startRouteAnimation() {
   if (routeAnimFrame) cancelAnimationFrame(routeAnimFrame);
@@ -563,6 +938,8 @@ function stopRouteAnimation() {
   if (routeAnimFrame) { cancelAnimationFrame(routeAnimFrame); routeAnimFrame = null; }
   currentRoute = []; altRoutes = [];
   routeAnimOffset = 0;
+  const summary = document.getElementById('altSummary');
+  if (summary) summary.remove();
   updateMapSummary();
 }
 
@@ -663,14 +1040,15 @@ function calculateShortestRoute() {
   return route.map(k => bins.find(b => getBinNodeKey(b) === k)).filter(Boolean);
 }
 
-// Find alternative routes (2nd and 3rd best)
+// Find up to MAX_ALTS alternative routes (sorted by total cost)
+const MAX_ALTS = 3;
 function findAlternativeRoutes(bestBinRoute) {
   if (bestBinRoute.length === 0) return [];
 
   const targetKeys = bestBinRoute.map(b => getBinNodeKey(b)).filter(Boolean);
   const alternatives = [];
 
-  // Collect all reasonable permutations with their costs
+  // Collect all permutations with their costs
   const results = [];
   for (const perm of getPermutations(targetKeys)) {
     const cost = graphRouteTotalCost(['depot', ...perm]);
@@ -678,15 +1056,20 @@ function findAlternativeRoutes(bestBinRoute) {
   }
   results.sort((a, b) => a.cost - b.cost);
 
-  // Take up to 2 alternatives that are meaningfully different (>10% cost difference)
-  for (let i = 1; i < Math.min(results.length, 6); i++) {
-    if (results[i].cost > results[0].cost * 1.08) {
+  // Take the next-best distinct permutations (skip the optimal, take up to MAX_ALTS)
+  const seen = new Set([results[0].perm.join('|')]);
+  for (let i = 1; i < results.length && alternatives.length < MAX_ALTS; i++) {
+    const key = results[i].perm.join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Allow even tiny cost differences (>=1% worse than best)
+    if (results[i].cost >= results[0].cost * 1.01) {
       alternatives.push({
         cost: results[i].cost,
         path: buildShortestEdgePath(['depot', ...results[i].perm, 'depot']),
+        binOrder: results[i].perm,
       });
     }
-    if (alternatives.length >= 2) break;
   }
   return alternatives;
 }
@@ -721,27 +1104,92 @@ function getPermutations(arr) {
 // SUPABASE
 // ══════════════════════════════════════════════════════════════════
 
+async function fetchRemoteBins(client) {
+  const { data: binData, error: binErr } = await client
+    .from('bins').select('*').order('name');
+  if (binErr || !binData || binData.length === 0) {
+    return { ok: false, message: binErr?.message || 'bins tablosu boş veya okunamadı' };
+  }
+
+  const { data: catData, error: catErr } = await client
+    .from('waste_categories').select('*');
+  if (catErr || !catData) {
+    return { ok: false, message: catErr?.message || 'waste_categories okunamadı' };
+  }
+
+  return {
+    ok: true,
+    bins: binData.map(b => ({ ...b, categories: catData.filter(c => c.bin_id === b.id) })),
+  };
+}
+
+async function tryLoadRemoteBinsWithCurrentClient() {
+  const result = await fetchRemoteBins(supabaseClient);
+  if (!result.ok) return result;
+
+  bins = result.bins;
+  renderBins();
+  updateStats();
+  drawMap();
+  updateDataSourceStatus('connected', DATA_MODE === 'proxy' ? 'DB: yerel proxy' : DATA_MODE === 'rest' ? 'DB: REST' : 'DB: canlı');
+  showToast(DATA_MODE === 'proxy'
+    ? '✅ Supabase verisi yerel proxy ile yüklendi'
+    : DATA_MODE === 'rest'
+      ? '✅ Supabase REST verisi yüklendi'
+      : '✅ Supabase verisi yüklendi', 'success');
+  return result;
+}
+
+async function switchToDirectRestClient() {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key || url.startsWith('YOUR_') || key.startsWith('YOUR_')) return false;
+  supabaseClient = createSupabaseRestClient(url, key);
+  DATA_MODE = 'rest';
+  updateDataSourceStatus('loading', 'DB: REST deneniyor');
+  return true;
+}
+
+function switchToProxyRestClient() {
+  supabaseClient = createSupabaseRestClient('/api/supabase', '');
+  DATA_MODE = 'proxy';
+  updateDataSourceStatus('loading', 'DB: proxy deneniyor');
+}
+
 async function loadBinsFromSupabase() {
   try {
-    const { data: binData, error: binErr } = await supabaseClient
-      .from('bins').select('*').order('name');
-    if (binErr || !binData || binData.length === 0) {
-      console.warn('Bins yuklenemedi, demo mod devam ediyor:', binErr?.message);
-      return;
+    let result = await tryLoadRemoteBinsWithCurrentClient();
+    if (result.ok) return true;
+    console.warn(`${DATA_MODE} veri yolu başarısız:`, result.message);
+
+    if (DATA_MODE !== 'rest' && await switchToDirectRestClient()) {
+      result = await tryLoadRemoteBinsWithCurrentClient();
+      if (result.ok) return true;
+      console.warn('REST veri yolu başarısız:', result.message);
     }
-    const { data: catData, error: catErr } = await supabaseClient
-      .from('waste_categories').select('*');
-    if (catErr || !catData) {
-      console.warn('Kategoriler yuklenemedi:', catErr?.message);
-      return;
-    }
-    bins = binData.map(b => ({ ...b, categories: catData.filter(c => c.bin_id === b.id) }));
-    renderBins();
-    updateStats();
-    drawMap();
-    showToast('✅ Supabase verisi yüklendi', 'success');
+
+    switchToProxyRestClient();
+    result = await tryLoadRemoteBinsWithCurrentClient();
+    if (result.ok) return true;
+    console.warn('Yerel proxy veri yolu başarısız:', result.message);
+    return false;
   } catch (e) {
     console.warn('Supabase hatasi, demo mod devam ediyor:', e.message);
+
+    try {
+      if (DATA_MODE !== 'rest' && await switchToDirectRestClient()) {
+        const restResult = await tryLoadRemoteBinsWithCurrentClient();
+        if (restResult.ok) return true;
+        console.warn('REST veri yolu başarısız:', restResult.message);
+      }
+      switchToProxyRestClient();
+      const proxyResult = await tryLoadRemoteBinsWithCurrentClient();
+      if (proxyResult.ok) return true;
+      console.warn('Yerel proxy veri yolu başarısız:', proxyResult.message);
+    } catch (fallbackError) {
+      console.warn('Tüm DB fallback yolları başarısız:', fallbackError.message);
+    }
+
+    return false;
   }
 }
 
@@ -867,6 +1315,10 @@ function updateMapSummary() {
 // ══════════════════════════════════════════════════════════════════
 
 function setupRealtime() {
+  if (!supabaseClient?.channel) {
+    console.warn('Realtime kullanılamıyor; REST veri modu aktif.');
+    return;
+  }
   supabaseClient
     .channel('waste_categories_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'waste_categories' }, async (payload) => {
@@ -881,6 +1333,10 @@ function setupRealtime() {
         if (existing) binsGrid.replaceChild(createBinCard(bins[binIndex]), existing);
         updateStats();
         drawMap();
+        // If simulation modal is open, refresh that bin's controls live
+        if (simModal && !simModal.classList.contains('hidden')) {
+          renderSimBinCard(bins[binIndex]);
+        }
       }
     })
     .subscribe();
@@ -982,20 +1438,25 @@ function generateRoute() {
     const toKey = getBinNodeKey(bin);
     const { dist } = dijkstra(fromKey);
     const legCost = Math.round(dist[toKey] || 0);
+    const legColor = LEG_COLORS[i % LEG_COLORS.length];
 
     const stop = document.createElement('div');
     stop.className = 'route-stop';
     stop.innerHTML = `
-      <div class="stop-num">${i + 1}</div>
+      <div class="stop-num" style="background:${legColor};color:#0c0a09">${i + 1}</div>
       <div class="stop-body">
         <div class="stop-name">${bin.location_icon} ${bin.location}</div>
-        <div class="stop-fill">Doluluk: ${fill}% · ${legCost}m</div>
+        <div class="stop-fill">Doluluk: ${fill}% · <span style="color:${legColor};font-weight:700">${legCost}m</span></div>
       </div>
       <span class="stop-priority ${pClass}">${pText}</span>`;
     routeList.appendChild(stop);
   });
 
   const totalGraphCost = graphRouteTotalCost(['depot', ...sorted.map(b => getBinNodeKey(b))]);
+
+  // Show alternatives summary in route panel
+  renderAltSummary(altRoutes, totalGraphCost);
+
   const minutes = Math.max(5, Math.round(totalGraphCost / 7) + sorted.length * 4);
   routeTime.textContent = `~${minutes} dk (${totalGraphCost}m toplam)`;
   routeWaste.textContent = `~${Math.round(totalFill * 1.2)} L`;
@@ -1006,8 +1467,41 @@ function generateRoute() {
   saveRoutePlan(sorted, totalFill);
 }
 
+// ── Render alt routes summary into route panel ──
+function renderAltSummary(alts, bestCost) {
+  // Remove existing summary if any
+  const old = document.getElementById('altSummary');
+  if (old) old.remove();
+  if (!alts || alts.length === 0) return;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'altSummary';
+  wrap.className = 'alt-summary';
+  wrap.innerHTML = `
+    <div class="alt-summary-title">Alternatif Rotalar (${alts.length})</div>
+    ${alts.map((alt, idx) => {
+      const meta = ALT_STYLES[idx % ALT_STYLES.length];
+      const order = (alt.binOrder || []).map(k => {
+        const bin = bins.find(b => getBinNodeKey(b) === k);
+        return bin ? `${bin.location_icon} ${bin.location}` : k;
+      }).join(' → ');
+      const diff = Math.round(((alt.cost - bestCost) / bestCost) * 100);
+      return `
+        <div class="alt-item">
+          <span class="alt-dot" style="background:${meta.color}"></span>
+          <div class="alt-body">
+            <div class="alt-order">${order}</div>
+            <div class="alt-meta">${Math.round(alt.cost)}m · <span style="color:${meta.color}">+%${diff}</span> daha uzun</div>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+  // Insert after route list
+  routeList.insertAdjacentElement('afterend', wrap);
+}
+
 async function saveRoutePlan(sorted, totalFill) {
-  if (IS_DEMO || !supabase) return;
+  if (IS_DEMO || !supabaseClient) return;
   try {
     await supabaseClient.from('route_plans').insert({
       route_order: sorted.map(b => ({ id: b.id, location: b.location, fill: avgFill(b) })),
@@ -1050,23 +1544,33 @@ async function collectBin(binId, showMsg = true) {
       addHistoryItem(bin.name, 'Tüm kategoriler sıfırlandı');
     }
     renderBins(); updateStats();
+    recordHistorySnapshotNow();
     return;
   }
 
-  await supabaseClient.from('collection_events').insert({
+  const { error: eventErr } = await supabaseClient.from('collection_events').insert({
     bin_id: binId, collected_by: 'Sistem', levels_before: levelsBefore
   });
+  if (eventErr) console.warn('Toplama geçmişi kaydedilemedi:', eventErr.message);
   for (const cat of (bin.categories || [])) {
-    await supabaseClient.from('waste_categories')
+    cat.current_level = 0;
+    const { error } = await supabaseClient.from('waste_categories')
       .update({ current_level: 0, updated_at: new Date().toISOString() })
       .eq('id', cat.id);
+    if (error) console.warn('Kategori sıfırlanamadı:', error.message);
   }
   if (showMsg) {
     collectionCount++;
     showToast(`🚛 ${bin.name} başarıyla toplandı!`, 'success');
     addHistoryItem(bin.name, 'Tüm kategoriler sıfırlandı');
-    updateStats();
   }
+  renderBins();
+  updateStats();
+  drawMap();
+  if (simModal && !simModal.classList.contains('hidden')) {
+    renderSimBinCard(bin);
+  }
+  recordHistorySnapshotNow();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1074,18 +1578,22 @@ async function collectBin(binId, showMsg = true) {
 // ══════════════════════════════════════════════════════════════════
 
 async function loadCollectionHistory() {
-  const { data } = await supabaseClient
-    .from('collection_events').select('*, bins(name,location_icon)')
-    .order('collected_at', { ascending: false }).limit(20);
-  if (!data || data.length === 0) return;
-  collectionCount = data.length;
-  valCollections.textContent = collectionCount;
-  historyList.innerHTML = '';
-  data.forEach(ev => {
-    const binName = ev.bins ? `${ev.bins.location_icon} ${ev.bins.name}` : 'Bilinmeyen';
-    const time = new Date(ev.collected_at).toLocaleString('tr-TR');
-    addHistoryItem(binName, time, false);
-  });
+  try {
+    const { data, error } = await supabaseClient
+      .from('collection_events').select('*, bins(name,location_icon)')
+      .order('collected_at', { ascending: false }).limit(20);
+    if (error || !data || data.length === 0) return;
+    collectionCount = data.length;
+    valCollections.textContent = collectionCount;
+    historyList.innerHTML = '';
+    data.forEach(ev => {
+      const binName = ev.bins ? `${ev.bins.location_icon} ${ev.bins.name}` : 'Bilinmeyen';
+      const time = new Date(ev.collected_at).toLocaleString('tr-TR');
+      addHistoryItem(binName, time, false);
+    });
+  } catch (e) {
+    console.warn('Toplama geçmişi yüklenemedi:', e.message);
+  }
 }
 
 function addHistoryItem(title, meta, prepend = true) {
@@ -1137,42 +1645,144 @@ function setupEventListeners() {
   });
 }
 
+const CAT_NAMES = { plastic: 'Plastik', paper: 'Kağıt', organic: 'Organik', glass: 'Cam', metal: 'Metal' };
+const CAT_ICONS = { plastic: '♳', paper: '📄', organic: '🌿', glass: '🍶', metal: '🥫' };
+
 function buildSimBinControls() {
   const container = document.getElementById('simBinControls');
   container.innerHTML = '';
 
   bins.forEach(bin => {
-    const fill = avgFill(bin);
-    const status = binStatus(fill);
-    const sClass = `badge-${status}`;
-    const sText = status === 'critical' ? 'Kritik' : status === 'warning' ? 'Uyarı' : 'Normal';
-
     const card = document.createElement('div');
     card.className = 'sim-bin-card';
     card.dataset.binId = bin.id;
-    card.innerHTML = `
-      <div class="sim-bin-header">
-        <span class="sim-bin-icon">${bin.location_icon}</span>
-        <div class="sim-bin-info">
-          <div class="sim-bin-name">${bin.name}</div>
-          <div class="sim-bin-fill">Doluluk: <strong id="sim-fill-${bin.id}">${fill}%</strong></div>
-        </div>
-        <span class="bin-status-badge ${sClass}">${sText}</span>
-      </div>
-      <div class="sim-bin-actions">
-        <button class="btn-sim-action fill" data-bin="${bin.id}" data-delta="10">+10%</button>
-        <button class="btn-sim-action fill" data-bin="${bin.id}" data-delta="25">+25%</button>
-        <button class="btn-sim-action fill" data-bin="${bin.id}" data-delta="50">+50%</button>
-        <button class="btn-sim-action drain" data-bin="${bin.id}" data-delta="-100">Boşalt</button>
-      </div>`;
     container.appendChild(card);
+    renderSimBinCard(bin);
   });
+}
 
-  container.querySelectorAll('.btn-sim-action[data-bin]').forEach(btn => {
+function renderSimBinCard(bin) {
+  const card = document.querySelector(`.sim-bin-card[data-bin-id="${bin.id}"]`);
+  if (!card) return;
+  const fill = avgFill(bin);
+  const status = binStatus(fill);
+  const sClass = `badge-${status}`;
+  const sText = status === 'critical' ? 'Kritik' : status === 'warning' ? 'Uyarı' : 'Normal';
+  const fillColorVar = status === 'critical' ? 'var(--danger)' : status === 'warning' ? 'var(--warning)' : 'var(--primary)';
+
+  const catRows = (bin.categories || []).map(cat => {
+    const lvl = Math.round(parseFloat(cat.current_level));
+    return `
+      <div class="sim-cat-row" data-cat="${cat.category}">
+        <span class="sim-cat-icon">${CAT_ICONS[cat.category] || '•'}</span>
+        <span class="sim-cat-name">${CAT_NAMES[cat.category] || cat.category}</span>
+        <div class="sim-cat-bar">
+          <div class="sim-cat-bar-fill" style="width:${lvl}%;background:${cat.color_hex}"></div>
+        </div>
+        <input type="range" min="0" max="100" step="1" value="${lvl}"
+               class="sim-cat-slider"
+               data-bin="${bin.id}" data-cat="${cat.category}"
+               aria-label="${CAT_NAMES[cat.category]} doluluğu" />
+        <span class="sim-cat-pct" style="color:${cat.color_hex}">${lvl}%</span>
+        <div class="sim-cat-btns">
+          <button class="sim-cat-btn minus" title="-10%" data-bin="${bin.id}" data-cat="${cat.category}" data-delta="-10">−</button>
+          <button class="sim-cat-btn plus"  title="+10%" data-bin="${bin.id}" data-cat="${cat.category}" data-delta="10">+</button>
+          <button class="sim-cat-btn zero"  title="Sıfırla" data-bin="${bin.id}" data-cat="${cat.category}" data-set="0">⟲</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  card.innerHTML = `
+    <div class="sim-bin-header">
+      <span class="sim-bin-icon">${bin.location_icon}</span>
+      <div class="sim-bin-info">
+        <div class="sim-bin-name">${bin.name}</div>
+        <div class="sim-bin-fill">Genel Doluluk: <strong style="color:${fillColorVar}">${fill}%</strong></div>
+      </div>
+      <span class="bin-status-badge ${sClass}">${sText}</span>
+    </div>
+    <div class="sim-bin-gauge">
+      <div class="sim-bin-gauge-fill" style="width:${fill}%;background:${fillColorVar}"></div>
+    </div>
+    <div class="sim-cat-list">${catRows}</div>
+    <div class="sim-bin-footer">
+      <button class="btn-sim-action fill"  data-bin="${bin.id}" data-delta="10">Tümü +10%</button>
+      <button class="btn-sim-action fill"  data-bin="${bin.id}" data-delta="25">Tümü +25%</button>
+      <button class="btn-sim-action drain" data-bin="${bin.id}" data-delta="-100">Hepsini Boşalt</button>
+    </div>`;
+
+  // Per-category controls
+  card.querySelectorAll('.sim-cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const binId = btn.dataset.bin;
+      const cat = btn.dataset.cat;
+      if (btn.dataset.set !== undefined) {
+        applySimulationSetCategory(binId, cat, parseInt(btn.dataset.set));
+      } else {
+        applySimulationForCategory(binId, cat, parseInt(btn.dataset.delta));
+      }
+    });
+  });
+  // Slider: live preview + final commit
+  card.querySelectorAll('.sim-cat-slider').forEach(slider => {
+    slider.addEventListener('input', () => {
+      const row = slider.closest('.sim-cat-row');
+      const lvl = parseInt(slider.value);
+      const fillBar = row.querySelector('.sim-cat-bar-fill');
+      const pct = row.querySelector('.sim-cat-pct');
+      if (fillBar) fillBar.style.width = lvl + '%';
+      if (pct) pct.textContent = lvl + '%';
+    });
+    slider.addEventListener('change', () => {
+      applySimulationSetCategory(slider.dataset.bin, slider.dataset.cat, parseInt(slider.value));
+    });
+  });
+  // Per-bin bulk controls
+  card.querySelectorAll('.btn-sim-action[data-bin]').forEach(btn => {
     btn.addEventListener('click', () => {
       applySimulationForBin(btn.dataset.bin, parseInt(btn.dataset.delta));
     });
   });
+}
+
+async function persistCategoryLevel(cat, newLevel) {
+  cat.current_level = newLevel;
+  if (!IS_DEMO && supabaseClient) {
+    try {
+      const { error } = await supabaseClient
+        .from('waste_categories')
+        .update({ current_level: newLevel, updated_at: new Date().toISOString() })
+        .eq('id', cat.id);
+      if (error) console.warn('Kategori güncellenemedi:', error.message);
+    } catch (e) { console.warn('Kategori güncellenemedi:', e.message); }
+  }
+}
+
+function refreshAfterSim(bin, recordHistory = true) {
+  renderBins();
+  updateStats();
+  renderSimBinCard(bin);
+  if (recordHistory) recordHistorySnapshotNow();
+}
+
+async function applySimulationForCategory(binId, catName, delta) {
+  const bin = bins.find(b => b.id === binId);
+  if (!bin) return;
+  const cat = (bin.categories || []).find(c => c.category === catName);
+  if (!cat) return;
+  const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
+  await persistCategoryLevel(cat, newLevel);
+  refreshAfterSim(bin);
+}
+
+async function applySimulationSetCategory(binId, catName, value) {
+  const bin = bins.find(b => b.id === binId);
+  if (!bin) return;
+  const cat = (bin.categories || []).find(c => c.category === catName);
+  if (!cat) return;
+  const newLevel = Math.min(100, Math.max(0, value));
+  await persistCategoryLevel(cat, newLevel);
+  refreshAfterSim(bin);
 }
 
 async function applySimulationForBin(binId, delta) {
@@ -1182,21 +1792,11 @@ async function applySimulationForBin(binId, delta) {
 
   const targetCats = catSel === 'all' ? bin.categories : bin.categories.filter(c => c.category === catSel);
   for (const cat of targetCats) {
-    let newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
-    if (!IS_DEMO) {
-      await supabaseClient
-        .from('waste_categories')
-        .update({ current_level: newLevel, updated_at: new Date().toISOString() })
-        .eq('id', cat.id);
-    }
-    cat.current_level = newLevel;
+    const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
+    await persistCategoryLevel(cat, newLevel);
   }
 
-  renderBins();
-  updateStats();
-
-  const fillEl = document.getElementById(`sim-fill-${binId}`);
-  if (fillEl) fillEl.textContent = avgFill(bin) + '%';
+  refreshAfterSim(bin);
 
   const action = delta > 0 ? `+${delta}%` : 'boşaltıldı';
   showToast(`⚡ ${bin.location}: ${action}`, delta < 0 ? 'warning' : 'success');
@@ -1207,19 +1807,15 @@ async function applySimulationAll(delta) {
   for (const bin of bins) {
     const targetCats = catSel === 'all' ? bin.categories : bin.categories.filter(c => c.category === catSel);
     for (const cat of targetCats) {
-      let d = Math.floor(Math.random() * delta) + 1;
-      let newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + d));
-      if (!IS_DEMO) {
-        await supabaseClient
-          .from('waste_categories')
-          .update({ current_level: newLevel, updated_at: new Date().toISOString() })
-          .eq('id', cat.id);
-      }
-      cat.current_level = newLevel;
+      const d = Math.floor(Math.random() * delta) + 1;
+      const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + d));
+      await persistCategoryLevel(cat, newLevel);
     }
+    renderSimBinCard(bin);
   }
-  renderBins(); updateStats();
-  buildSimBinControls();
+  renderBins();
+  updateStats();
+  recordHistorySnapshotNow();
   showToast(`⚡ Rastgele: +${delta}% dolduruldu`, 'success');
 }
 
@@ -1283,11 +1879,16 @@ function buildSnapshot() {
 
 async function ensureHistoryTable() {
   if (IS_DEMO || !supabaseClient) return;
+  remoteHistoryAvailable = true;
   try {
-    await supabaseClient.from('bin_level_history').select('id', { count: 'exact', head: true }).limit(1);
+    const { error } = await supabaseClient.from('bin_level_history').select('id', { count: 'exact', head: true }).limit(1);
+    if (error) {
+      remoteHistoryAvailable = false;
+      console.warn('bin_level_history erişilemedi, localStorage geçmişi kullanılacak:', error.message);
+    }
   } catch (e) {
-    console.warn('bin_level_history tablosu bulunamadı, localStorage kullanılacak');
-    IS_DEMO = true;
+    remoteHistoryAvailable = false;
+    console.warn('bin_level_history erişilemedi, localStorage geçmişi kullanılacak:', e.message);
   }
 }
 
@@ -1296,13 +1897,21 @@ async function saveSnapshot() {
   historyData.push(snap);
   if (historyData.length > 200) historyData = historyData.slice(-200);
   try {
-    if (!IS_DEMO && supabaseClient) {
-      await supabaseClient.from('bin_level_history').insert({ recorded_at: new Date().toISOString(), snapshot: snap.data });
+    if (!IS_DEMO && supabaseClient && remoteHistoryAvailable) {
+      const { error } = await supabaseClient.from('bin_level_history').insert({ recorded_at: new Date().toISOString(), snapshot: snap.data });
+      if (error) console.warn('Snapshot kaydedilemedi:', error.message);
     }
   } catch (e) {
     console.warn('Snapshot kaydedilemedi:', e.message);
   }
   saveLocalHistory();
+}
+
+async function recordHistorySnapshotNow() {
+  await saveSnapshot();
+  if (document.getElementById('panel-charts')?.classList.contains('active')) {
+    renderCharts();
+  }
 }
 
 function saveLocalHistory() {
@@ -1332,17 +1941,24 @@ function loadLocalHistory() {
 }
 
 async function loadHistoryData() {
-  if (IS_DEMO) { loadLocalHistory(); return; }
+  if (IS_DEMO || !remoteHistoryAvailable) { loadLocalHistory(); return; }
   try {
     const { data, error } = await supabaseClient
       .from('bin_level_history')
       .select('recorded_at,snapshot')
       .order('recorded_at', { ascending: false })
       .limit(100);
-    if (error || !data) { loadLocalHistory(); return; }
+    if (error || !data) {
+      console.warn('Doluluk geçmişi DBden yüklenemedi, localStorage kullanılacak:', error?.message);
+      loadLocalHistory();
+      return;
+    }
     historyData = data.reverse().map(row => ({ t: new Date(row.recorded_at).getTime(), data: row.snapshot }));
     if (historyData.length === 0) loadLocalHistory();
-  } catch (_) { loadLocalHistory(); }
+  } catch (e) {
+    console.warn('Doluluk geçmişi yüklenemedi, localStorage kullanılacak:', e.message);
+    loadLocalHistory();
+  }
 }
 
 function startHistorySnapshot() {
@@ -1353,9 +1969,193 @@ function startHistorySnapshot() {
 
 const CHART_COLORS = ['#22c55e','#3b82f6','#f59e0b','#ef4444','#8b5cf6'];
 const CAT_LABELS = { plastic:'Plastik', paper:'Kağıt', organic:'Organik', glass:'Cam', metal:'Metal' };
+const CAT_PALETTE = { plastic:'#3B82F6', paper:'#F59E0B', organic:'#10B981', glass:'#8B5CF6', metal:'#9CA3AF' };
+
+let perBinCharts = []; // [{ id, chart }]
+
+const COMMON_LINE_OPTS = (extra={}) => ({
+  responsive:true, maintainAspectRatio:false,
+  interaction:{ mode:'nearest', intersect:false },
+  plugins:{
+    legend:{labels:{color:'#9ca3af',font:{family:'Figtree',size:10},boxWidth:12,boxHeight:8,padding:10}},
+    tooltip:{ backgroundColor:'#1a1714', borderColor:'#332e29', borderWidth:1, titleColor:'#f5f0ea', bodyColor:'#cfc6ba', padding:10 },
+    ...(extra.plugins||{})
+  },
+  scales:{
+    x:{ticks:{color:'#6b7280',font:{size:10},maxTicksLimit:8},grid:{color:'#ffffff08'}},
+    y:{min:0,max:100,ticks:{color:'#6b7280',callback:(v)=>v+'%'},grid:{color:'#ffffff08'}}
+  },
+  elements:{ line:{ borderWidth:2 }, point:{ radius:2.5, hoverRadius:5 } }
+});
+
+function ensurePerBinChartCards() {
+  const grid = document.getElementById('chartsGrid');
+  if (!grid) return;
+  const existing = new Set(Array.from(grid.querySelectorAll('.chart-card.per-bin')).map(el => el.dataset.binId));
+  const wanted = new Set(bins.map(b => b.id));
+
+  // Remove obsolete
+  grid.querySelectorAll('.chart-card.per-bin').forEach(el => {
+    if (!wanted.has(el.dataset.binId)) el.remove();
+  });
+
+  // Add missing
+  bins.forEach(bin => {
+    if (existing.has(bin.id)) return;
+    const card = document.createElement('div');
+    card.className = 'chart-card per-bin';
+    card.dataset.binId = bin.id;
+    card.innerHTML = `
+      <h3 class="chart-card-title">${bin.location_icon} ${bin.location} – Atık Türü Geçmişi</h3>
+      <canvas id="chart-bin-${bin.id}"></canvas>`;
+    grid.appendChild(card);
+  });
+}
+
+function ensureHistoryHasCurrentSnapshot() {
+  if (historyData.length === 0 && bins.length) {
+    historyData.push({ t: Date.now(), data: buildSnapshot() });
+  }
+}
+
+function prepareFallbackCanvas(canvas, height = 220) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(280, Math.round(canvas.parentElement.getBoundingClientRect().width - 32));
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, width, height };
+}
+
+function drawFallbackLineChart(canvas, labels, datasets) {
+  if (!canvas) return;
+  const { ctx, width, height } = prepareFallbackCanvas(canvas, 220);
+  const pad = { l: 34, r: 12, t: 12, b: 28 };
+  const pw = width - pad.l - pad.r;
+  const ph = height - pad.t - pad.b;
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px Figtree, sans-serif';
+  ctx.fillStyle = '#6b7280';
+  [0, 25, 50, 75, 100].forEach(v => {
+    const y = pad.t + ph - (v / 100) * ph;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(width - pad.r, y); ctx.stroke();
+    ctx.fillText(`${v}%`, 2, y + 3);
+  });
+
+  datasets.forEach(ds => {
+    const data = ds.data || [];
+    if (!data.length) return;
+    ctx.beginPath();
+    data.forEach((value, i) => {
+      const x = pad.l + (data.length === 1 ? pw : (i / (data.length - 1)) * pw);
+      const y = pad.t + ph - (Math.max(0, Math.min(100, value)) / 100) * ph;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = ds.borderColor || '#22c55e';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  if (labels.length) {
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'left';
+    ctx.fillText(labels[0], pad.l, height - 8);
+    ctx.textAlign = 'right';
+    ctx.fillText(labels[labels.length - 1], width - pad.r, height - 8);
+  }
+}
+
+function drawFallbackBarChart(canvas, labels, values, colors) {
+  if (!canvas) return;
+  const { ctx, width, height } = prepareFallbackCanvas(canvas, 220);
+  const pad = { l: 78, r: 18, t: 12, b: 14 };
+  const barH = Math.min(26, (height - pad.t - pad.b) / Math.max(1, labels.length) - 8);
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = '11px Figtree, sans-serif';
+
+  labels.forEach((label, i) => {
+    const y = pad.t + i * (barH + 10);
+    const value = Math.max(0, Number(values[i]) || 0);
+    const barW = Math.min(1, value / 300) * (width - pad.l - pad.r);
+    ctx.fillStyle = '#cfc6ba';
+    ctx.textAlign = 'right';
+    ctx.fillText(label, pad.l - 8, y + barH * 0.72);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(pad.l, y, width - pad.l - pad.r, barH);
+    ctx.fillStyle = colors[i] || '#22c55e';
+    ctx.fillRect(pad.l, y, barW, barH);
+    ctx.fillStyle = '#9ca3af';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${Math.round(value)}%`, pad.l + barW + 6, y + barH * 0.72);
+  });
+}
+
+function renderFallbackCharts() {
+  ensurePerBinChartCards();
+  ensureHistoryHasCurrentSnapshot();
+  const sorted = [...historyData].sort((a,b) => a.t - b.t);
+  const labels = sorted.map(s => new Date(s.t).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}));
+  const binNames = sorted.length ? sorted[sorted.length-1].data.map(b=>b.name) : [];
+  const overallData = sorted.map(s => {
+    if (!s.data || s.data.length === 0) return 0;
+    return Math.round(s.data.reduce((a,b)=>a+(b.avgFill||0),0) / s.data.length);
+  });
+
+  drawFallbackLineChart(document.getElementById('chartOverall'), labels, [{
+    label: 'Ortalama Doluluk (%)',
+    data: overallData,
+    borderColor: '#22c55e'
+  }]);
+
+  drawFallbackLineChart(document.getElementById('chartBins'), labels, binNames.map((name, i) => ({
+    label: name.replace(' Çöp Kovası',''),
+    data: sorted.map(s => { const b = s.data.find(d=>d.name===name); return b ? b.avgFill : 0; }),
+    borderColor: CHART_COLORS[i % CHART_COLORS.length],
+  })));
+
+  const latest = sorted[sorted.length - 1];
+  const catTotals = {};
+  if (latest) latest.data.forEach(b => (b.categories||[]).forEach(c => { catTotals[c.category] = (catTotals[c.category]||0) + c.level; }));
+  const catKeys = Object.keys(catTotals);
+  drawFallbackBarChart(
+    document.getElementById('chartCategories'),
+    catKeys.map(k => CAT_LABELS[k]||k),
+    catKeys.map(k => catTotals[k]),
+    catKeys.map(k => CAT_PALETTE[k] || '#6B7280')
+  );
+
+  bins.forEach(bin => {
+    const canvas = document.getElementById(`chart-bin-${bin.id}`);
+    const catNames = (bin.categories || []).map(c => c.category);
+    drawFallbackLineChart(canvas, labels, catNames.map(catKey => ({
+      label: CAT_LABELS[catKey] || catKey,
+      data: sorted.map(s => {
+        const sb = s.data.find(d => d.id === bin.id) || s.data.find(d => d.name === bin.name);
+        const sc = sb?.categories?.find(c => c.category === catKey);
+        return sc ? Math.round(sc.level) : 0;
+      }),
+      borderColor: CAT_PALETTE[catKey] || '#9CA3AF',
+    })));
+  });
+}
 
 function renderCharts() {
-  if (typeof Chart === 'undefined') { console.warn('Chart.js yuklenmedi'); return; }
+  if (typeof Chart === 'undefined') {
+    console.warn('Chart.js yüklenmedi; native canvas grafik fallback kullanılacak.');
+    renderFallbackCharts();
+    return;
+  }
+
+  ensurePerBinChartCards();
+  ensureHistoryHasCurrentSnapshot();
+
   const ctxO = document.getElementById('chartOverall')?.getContext('2d');
   const ctxB = document.getElementById('chartBins')?.getContext('2d');
   const ctxC = document.getElementById('chartCategories')?.getContext('2d');
@@ -1364,62 +2164,92 @@ function renderCharts() {
   if (chartOverall) chartOverall.destroy();
   if (chartBins) chartBins.destroy();
   if (chartCategories) chartCategories.destroy();
+  perBinCharts.forEach(p => p.chart.destroy());
+  perBinCharts = [];
 
   const sorted = [...historyData].sort((a,b) => a.t - b.t);
   const labels = sorted.map(s => new Date(s.t).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}));
   const binNames = sorted.length ? sorted[sorted.length-1].data.map(b=>b.name) : [];
 
+  // ── Overall: average of all bins over time ──
+  const overallData = sorted.map(s => {
+    if (!s.data || s.data.length === 0) return 0;
+    const avg = s.data.reduce((a,b)=>a+(b.avgFill||0),0) / s.data.length;
+    return Math.round(avg);
+  });
+  chartOverall = new Chart(ctxO, {
+    type: 'line',
+    data: { labels, datasets: [{
+      label:'Ortalama Doluluk (%)', data: overallData,
+      borderColor:'#22c55e', backgroundColor:'#22c55e22',
+      fill:true, tension:0.35
+    }] },
+    options: COMMON_LINE_OPTS()
+  });
+
+  // ── Multi-bin overview ──
   const binDatasets = binNames.map((name, i) => ({
     label: name.replace(' Çöp Kovası',''),
     data: sorted.map(s => { const b = s.data.find(d=>d.name===name); return b ? b.avgFill : 0; }),
     borderColor: CHART_COLORS[i % CHART_COLORS.length],
     backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + '18',
-    fill: false,
-    tension: 0.35,
-    pointRadius: 3,
-    pointHoverRadius: 6
+    fill: false, tension: 0.35
   }));
-
-  chartOverall = new Chart(ctxO, {
-    type: 'line',
-    data: { labels, datasets: [{ label:'Ortalama Doluluk (%)', data: sorted.map(s => { const avg = s.data.reduce((a,b)=>a+b.avgFill,0)/s.data.length; return Math.round(avg); }), borderColor:'#22c55e', backgroundColor:'#22c55e18', fill:true, tension:0.35, pointRadius:3 }] },
-    options: {
-      responsive:true,maintainAspectRatio:false,
-      plugins:{ legend:{labels:{color:'#9ca3af',font:{family:'Figtree',size:11}}} },
-      scales:{ x:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#ffffff08'}}, y:{min:0,max:100,ticks:{color:'#6b7280'},grid:{color:'#ffffff08'}} }
-    }
-  });
-
   chartBins = new Chart(ctxB, {
     type: 'line',
     data: { labels, datasets: binDatasets },
-    options: {
-      responsive:true,maintainAspectRatio:false,
-      plugins:{ legend:{labels:{color:'#9ca3af',font:{family:'Figtree',size:10}}} },
-      scales:{ x:{ticks:{color:'#6b7280',font:{size:10},maxTicksLimit:8},grid:{color:'#ffffff08'}}, y:{min:0,max:100,ticks:{color:'#6b7280'},grid:{color:'#ffffff08'}} }
-    }
+    options: COMMON_LINE_OPTS()
   });
 
+  // ── Category totals (snapshot) ──
   const latest = sorted[sorted.length - 1];
   const catTotals = {};
   if (latest) latest.data.forEach(b => (b.categories||[]).forEach(c => { catTotals[c.category] = (catTotals[c.category]||0) + c.level; }));
-
+  const catKeys = Object.keys(catTotals);
   chartCategories = new Chart(ctxC, {
     type: 'bar',
     data: {
-      labels: Object.keys(catTotals).map(k => CAT_LABELS[k]||k),
+      labels: catKeys.map(k => CAT_LABELS[k]||k),
       datasets: [{
         label: 'Toplam Doluluk (%)',
-        data: Object.values(catTotals).map(v => Math.round(v)),
-        backgroundColor: ['#3B82F6','#F59E0B','#10B981','#8B5CF6','#6B7280'],
-        borderRadius: 8,
-        barThickness: 40
+        data: catKeys.map(k => Math.round(catTotals[k])),
+        backgroundColor: catKeys.map(k => CAT_PALETTE[k] || '#6B7280'),
+        borderRadius: 8, barThickness: 36
       }]
     },
     options: {
       responsive:true,maintainAspectRatio:false,indexAxis:'y',
-      plugins:{ legend:{display:false} },
-      scales:{ x:{min:0,ticks:{color:'#6b7280'},grid:{color:'#ffffff08'}}, y:{ticks:{color:'#9ca3af',font:{size:12}},grid:{display:false}} }
+      plugins:{ legend:{display:false}, tooltip:{ backgroundColor:'#1a1714', borderColor:'#332e29', borderWidth:1 } },
+      scales:{ x:{min:0,ticks:{color:'#6b7280',callback:v=>v+'%'},grid:{color:'#ffffff08'}}, y:{ticks:{color:'#cfc6ba',font:{size:12}},grid:{display:false}} }
     }
+  });
+
+  // ── Per-bin category trend charts ──
+  bins.forEach(bin => {
+    const canvas = document.getElementById(`chart-bin-${bin.id}`);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    // For each category, build a series across snapshots
+    const catNames = (bin.categories || []).map(c => c.category);
+    const datasets = catNames.map(catKey => ({
+      label: `${CAT_ICONS[catKey] || ''} ${CAT_LABELS[catKey] || catKey}`,
+      data: sorted.map(s => {
+        const sb = s.data.find(d => d.id === bin.id) || s.data.find(d => d.name === bin.name);
+        if (!sb || !sb.categories) return 0;
+        const sc = sb.categories.find(c => c.category === catKey);
+        return sc ? Math.round(sc.level) : 0;
+      }),
+      borderColor: CAT_PALETTE[catKey] || '#9CA3AF',
+      backgroundColor: (CAT_PALETTE[catKey] || '#9CA3AF') + '18',
+      fill: false, tension: 0.35
+    }));
+
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets },
+      options: COMMON_LINE_OPTS()
+    });
+    perBinCharts.push({ id: bin.id, chart });
   });
 }

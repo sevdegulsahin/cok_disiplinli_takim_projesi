@@ -21,6 +21,7 @@
       <div class="live-indicator">
         <span class="pulse-dot"></span>
         <span>Canlı İzleme</span>
+        <span id="dataSourceStatus" class="data-source-status loading">DB kontrol ediliyor</span>
       </div>
       <button id="btnSimulate" class="btn-sim">⚡ Simülasyon Modu</button>
     </div>
@@ -174,7 +175,7 @@
         <h2 class="section-title">Doluluk Geçmişi</h2>
         <p class="section-sub">Çöp kovalarının zaman içindeki doluluk değişimleri</p>
       </div>
-      <div class="charts-grid">
+      <div class="charts-grid" id="chartsGrid">
         <div class="chart-card">
           <h3 class="chart-card-title">Genel Doluluk Trendi</h3>
           <canvas id="chartOverall"></canvas>
@@ -184,9 +185,10 @@
           <canvas id="chartBins"></canvas>
         </div>
         <div class="chart-card chart-wide">
-          <h3 class="chart-card-title">Atık Türü Dağılımı</h3>
+          <h3 class="chart-card-title">Atık Türü Dağılımı (Anlık)</h3>
           <canvas id="chartCategories"></canvas>
         </div>
+        <!-- Per-bin category trend cards injected by JS here -->
       </div>
     </section>
   </div><!-- /panel-charts -->
@@ -198,22 +200,23 @@
         <h2>⚡ Simülasyon Modu</h2>
         <button id="closeSimModal" class="modal-close">✕</button>
       </div>
-      <p class="modal-desc">Her kova için ayrı ayrı doldurma veya boşaltma işlemi yapın.</p>
-
-      <label class="sim-label">Atık Türü</label>
-      <select id="simCatSelect" class="sim-select">
-        <option value="all">Tümü</option>
-        <option value="plastic">♳ Plastik</option>
-        <option value="paper">📄 Kağıt</option>
-        <option value="organic">🌿 Organik</option>
-        <option value="glass">🍶 Cam</option>
-        <option value="metal">🥫 Metal</option>
-      </select>
+      <p class="modal-desc">Her kova için her atık türünü ayrı ayrı düzenleyin. Slider'ı sürükleyin veya butonları kullanın; tüm değişiklikler anında veritabanına yazılır.</p>
 
       <div id="simBinControls" class="sim-bin-controls"></div>
 
-      <div class="sim-global-row">
-        <button id="simRandom" class="btn-sim-action random wide">🎲 Rastgele Doldur</button>
+      <div class="sim-global">
+        <label class="sim-label">Global İşlem Kapsamı</label>
+        <div class="sim-global-row">
+          <select id="simCatSelect" class="sim-select sim-select-inline">
+            <option value="all">Tüm atık türleri</option>
+            <option value="plastic">♳ Plastik</option>
+            <option value="paper">📄 Kağıt</option>
+            <option value="organic">🌿 Organik</option>
+            <option value="glass">🍶 Cam</option>
+            <option value="metal">🥫 Metal</option>
+          </select>
+          <button id="simRandom" class="btn-sim-action random wide">🎲 Rastgele Doldur</button>
+        </div>
       </div>
 
       <div class="sim-auto">
@@ -251,7 +254,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
           onerror="window.supabase=null" defer></script>
-  <script src="config.js?v=9" defer></script>
-  <script src="app.js?v=9" defer></script>
+  <script src="config.js?v=16" defer></script>
+  <script src="app.js?v=16" defer></script>
 </body>
 </html>

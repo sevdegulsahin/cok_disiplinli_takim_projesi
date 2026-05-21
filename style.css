@@ -89,6 +89,32 @@ body::before {
   display: flex; align-items: center; gap: 6px;
   font-size: 0.75rem; color: var(--primary); font-weight: 500;
 }
+.data-source-status {
+  display: inline-flex; align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid rgba(255,240,220,0.08);
+  border-radius: 999px;
+  color: var(--text-sec);
+  background: rgba(255,240,220,0.04);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.data-source-status.connected {
+  color: var(--primary);
+  border-color: rgba(34,197,94,0.25);
+  background: rgba(34,197,94,0.08);
+}
+.data-source-status.loading {
+  color: var(--warning);
+  border-color: rgba(245,158,11,0.22);
+  background: rgba(245,158,11,0.08);
+}
+.data-source-status.demo {
+  color: var(--danger);
+  border-color: rgba(239,68,68,0.25);
+  background: rgba(239,68,68,0.08);
+}
 .pulse-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--primary);
@@ -455,7 +481,8 @@ body::before {
   background: rgba(34,197,94,0.1); color: var(--primary);
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-display);
-  font-size: 0.7rem; font-weight: 800; flex-shrink: 0;
+  font-size: 0.75rem; font-weight: 800; flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset;
 }
 .stop-body { flex: 1; }
 .stop-name { font-size: 0.82rem; font-weight: 600; }
@@ -473,6 +500,46 @@ body::before {
   background: currentColor;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+/* ── Alt Routes Summary ─────────────────────────────────────────── */
+.alt-summary {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+  margin-top: 6px;
+}
+.alt-summary-title {
+  font-family: var(--font-display);
+  font-size: 0.62rem; font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+.alt-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 0;
+  border-top: 1px dashed var(--border);
+}
+.alt-item:first-of-type { border-top: none; padding-top: 0; }
+.alt-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  margin-top: 5px; flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
+}
+.alt-body { flex: 1; min-width: 0; }
+.alt-order {
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.alt-meta {
+  font-size: 0.66rem;
+  color: var(--text-sec);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Route Info ─────────────────────────────────────────────────── */
@@ -607,47 +674,166 @@ body::before {
 
 /* ── Sim Bin Cards ──────────────────────────────────────────────── */
 .sim-bin-controls {
-  display: flex; flex-direction: column; gap: 0.6rem;
-  margin: 1rem 0;
-  max-height: 360px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.7rem;
+  margin: 0.5rem 0 1rem;
+  max-height: 56vh; overflow-y: auto;
+  padding-right: 4px;
 }
 .sim-bin-card {
   background: var(--bg-card2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.8rem 1rem;
+  padding: 0.9rem 1rem;
 }
 .sim-bin-header {
-  display: flex; align-items: center; gap: 0.6rem;
-  margin-bottom: 0.6rem;
+  display: flex; align-items: center; gap: 0.7rem;
+  margin-bottom: 0.5rem;
 }
-.sim-bin-icon { font-size: 1.4rem; }
-.sim-bin-info { flex: 1; }
+.sim-bin-icon { font-size: 1.5rem; }
+.sim-bin-info { flex: 1; min-width: 0; }
 .sim-bin-name {
   font-family: var(--font-display);
-  font-size: 0.8rem; font-weight: 700;
+  font-size: 0.85rem; font-weight: 700;
+  letter-spacing: -0.01em;
 }
 .sim-bin-fill {
   font-size: 0.7rem; color: var(--text-sec);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 .sim-bin-fill strong {
-  color: var(--text-primary);
   font-family: var(--font-display);
+  font-weight: 800;
+  margin-left: 4px;
 }
-.sim-bin-actions {
-  display: flex; gap: 4px;
+.sim-bin-gauge {
+  height: 5px;
+  background: rgba(255,240,220,0.04);
+  border-radius: 99px; overflow: hidden;
+  margin-bottom: 0.75rem;
 }
-.sim-bin-actions .btn-sim-action {
+.sim-bin-gauge-fill {
+  height: 100%; border-radius: 99px;
+  transition: width 0.6s var(--ease), background 0.3s;
+}
+
+/* ── Per-category controls ───────────────────────────────────── */
+.sim-cat-list {
+  display: flex; flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  padding: 0.55rem 0;
+  margin-bottom: 0.6rem;
+}
+.sim-cat-row {
+  display: grid;
+  grid-template-columns: 18px 56px 1fr 110px 38px auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.72rem;
+}
+.sim-cat-icon { font-size: 0.85rem; text-align: center; }
+.sim-cat-name { color: var(--text-sec); font-weight: 500; }
+.sim-cat-bar {
+  height: 5px;
+  background: rgba(255,240,220,0.04);
+  border-radius: 99px; overflow: hidden;
+  min-width: 30px;
+}
+.sim-cat-bar-fill {
+  height: 100%; border-radius: 99px;
+  transition: width 0.25s var(--ease);
+}
+.sim-cat-pct {
+  font-family: var(--font-display);
+  font-size: 0.7rem; font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sim-cat-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+.sim-cat-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: rgba(255,240,220,0.08);
+  border-radius: 99px;
+}
+.sim-cat-slider::-moz-range-track {
+  height: 3px;
+  background: rgba(255,240,220,0.08);
+  border-radius: 99px;
+}
+.sim-cat-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  background: var(--primary);
+  border: 2px solid var(--bg-card2);
+  border-radius: 50%;
+  cursor: grab;
+  margin-top: -6px;
+  transition: transform 0.15s var(--ease);
+  box-shadow: 0 0 0 1px rgba(34,197,94,0.4);
+}
+.sim-cat-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.sim-cat-slider::-webkit-slider-thumb:active { cursor: grabbing; }
+.sim-cat-slider::-moz-range-thumb {
+  width: 14px; height: 14px;
+  background: var(--primary);
+  border: 2px solid var(--bg-card2);
+  border-radius: 50%;
+  cursor: grab;
+  box-shadow: 0 0 0 1px rgba(34,197,94,0.4);
+}
+.sim-cat-btns {
+  display: inline-flex; gap: 3px;
+}
+.sim-cat-btn {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255,240,220,0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-sec);
+  font-family: var(--font-display);
+  font-size: 0.85rem; font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.sim-cat-btn:hover {
+  background: rgba(255,240,220,0.08);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.sim-cat-btn.plus:hover  { color: var(--primary); border-color: rgba(34,197,94,0.4); }
+.sim-cat-btn.minus:hover { color: var(--warning); border-color: rgba(245,158,11,0.4); }
+.sim-cat-btn.zero        { font-size: 0.75rem; }
+.sim-cat-btn.zero:hover  { color: var(--danger); border-color: rgba(239,68,68,0.4); }
+
+.sim-bin-footer {
+  display: flex; gap: 6px;
+}
+.sim-bin-footer .btn-sim-action {
   flex: 1; min-width: 0;
-  padding: 5px 2px;
+  padding: 6px 4px;
   font-size: 0.7rem;
 }
+
+/* ── Global controls ─────────────────────────────────────────── */
+.sim-global { margin-top: 0.6rem; }
 .sim-global-row {
-  display: flex; gap: 6px; margin-bottom: 1rem;
+  display: flex; gap: 8px; align-items: stretch;
+  margin-top: 6px;
 }
+.sim-select-inline { flex: 1; min-width: 0; }
 .btn-sim-action.wide {
-  flex: 1; padding: 8px; text-align: center;
+  flex: 0 0 auto; padding: 8px 14px; text-align: center;
+  white-space: nowrap;
 }
 
 /* ── Toggle ─────────────────────────────────────────────────────── */
@@ -772,11 +958,40 @@ body::before {
 
 /* ── Charts ─────────────────────────────────────────────────────── */
 .charts-section { padding: 1.5rem 2rem 2.5rem; }
-.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-.chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+}
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.1rem 1.25rem;
+  position: relative;
+}
+.chart-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255,240,220,0.025), transparent 30%);
+  pointer-events: none;
+}
 .chart-wide { grid-column: 1 / -1; }
-.chart-card-title { font-family: 'Sora', sans-serif; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.chart-card canvas { max-height: 220px; }
+.chart-card-title {
+  font-family: var(--font-display);
+  font-size: 0.78rem; font-weight: 700;
+  color: var(--text-sec);
+  margin-bottom: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chart-card canvas {
+  max-height: 220px;
+  width: 100% !important;
+}
+.chart-card.per-bin canvas { max-height: 200px; }
 
 /* ── Responsive ─────────────────────────────────────────────────── */
 @media (max-width: 1024px) {
@@ -805,4 +1020,20 @@ body::before {
   }
   .charts-grid { grid-template-columns: 1fr; }
   .charts-section { padding: 1rem; }
+
+  /* Sim modal: stack category controls vertically on small screens */
+  .sim-cat-row {
+    grid-template-columns: 18px 1fr 50px auto;
+    grid-template-areas:
+      "icon name pct btns"
+      "bar  bar  bar bar"
+      "sld  sld  sld sld";
+    row-gap: 4px;
+  }
+  .sim-cat-icon { grid-area: icon; }
+  .sim-cat-name { grid-area: name; }
+  .sim-cat-pct  { grid-area: pct;  }
+  .sim-cat-btns { grid-area: btns; }
+  .sim-cat-bar  { grid-area: bar; }
+  .sim-cat-slider { grid-area: sld; }
 }

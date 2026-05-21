@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS waste_categories (
   current_level NUMERIC(5,2) DEFAULT 0 CHECK (current_level >= 0 AND current_level <= 100),
   color_hex TEXT NOT NULL,
   icon TEXT NOT NULL,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (bin_id, category)
 );
 
 -- Collection events: history of waste collections
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS bin_level_history (
   snapshot JSONB NOT NULL DEFAULT '[]'
 );
 
-CREATE INDEX idx_bin_level_history_time ON bin_level_history (recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bin_level_history_time ON bin_level_history (recorded_at DESC);
 
 -- Route plans: generated collection routes
 CREATE TABLE IF NOT EXISTS route_plans (
@@ -95,14 +96,20 @@ ON CONFLICT DO NOTHING;
 -- -------------------------------------------------------
 -- REALTIME + Row Level Security (PUBLIC ACCESS FOR DEMO)
 -- -------------------------------------------------------
-ALTER TABLE bins ENABLE ROW LEVEL SECURITY;
-ALTER TABLE waste_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bins              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waste_categories  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE collection_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE route_plans ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Allow all" ON bins FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all" ON waste_categories FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all" ON collection_events FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all" ON route_plans FOR ALL USING (true) WITH CHECK (true);
+ALTER TABLE route_plans       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bin_level_history ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all" ON bins;
+DROP POLICY IF EXISTS "Allow all" ON waste_categories;
+DROP POLICY IF EXISTS "Allow all" ON collection_events;
+DROP POLICY IF EXISTS "Allow all" ON route_plans;
+DROP POLICY IF EXISTS "Allow all" ON bin_level_history;
+
+CREATE POLICY "Allow all" ON bins              FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON waste_categories  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON collection_events FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON route_plans       FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON bin_level_history FOR ALL USING (true) WITH CHECK (true);
