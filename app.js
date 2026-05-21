@@ -170,6 +170,7 @@ const routeList = document.getElementById('routeList');
 const routeInfo = document.getElementById('routeInfo');
 const routeTime = document.getElementById('routeTime');
 const routeWaste = document.getElementById('routeWaste');
+const ROUTE_EMPTY_DEFAULT_HTML = 'Doluluk verilerine göre<br/>otomatik rota oluşturmak için<br/>butona tıklayın.';
 
 const historyList = document.getElementById('historyList');
 const toast = document.getElementById('toast');
@@ -943,6 +944,17 @@ function stopRouteAnimation() {
   updateMapSummary();
 }
 
+function resetRoutePanel(messageHtml) {
+  stopRouteAnimation();
+  routeList.innerHTML = '';
+  routeList.classList.add('hidden');
+  routeInfo.classList.add('hidden');
+  routeEmpty.classList.remove('hidden');
+  const emptyText = routeEmpty.querySelector('p');
+  if (emptyText && messageHtml) emptyText.innerHTML = messageHtml;
+  drawMap();
+}
+
 // ══════════════════════════════════════════════════════════════════
 // SHORTEST ROUTE — Dijkstra on road network + TSP permutations
 // ══════════════════════════════════════════════════════════════════
@@ -1016,13 +1028,17 @@ function calculateShortestRoute() {
   if (targetBins.length === 0) return [];
 
   const targetKeys = targetBins.map(b => getBinNodeKey(b)).filter(Boolean);
+  const fillByKey = Object.fromEntries(targetBins.map(b => [getBinNodeKey(b), avgFill(b)]).filter(([key]) => key));
 
   // Brute-force TSP over bin orderings, using graph costs
   if (targetKeys.length <= 8) {
-    let best = null, bestCost = Infinity;
+    let best = null, bestCost = Infinity, bestPriority = -Infinity;
     for (const perm of getPermutations(targetKeys)) {
       const c = graphRouteTotalCost(['depot', ...perm]);
-      if (c < bestCost) { bestCost = c; best = perm; }
+      const priority = routePriorityScore(perm, fillByKey);
+      if (isBetterRoute(c, priority, bestCost, bestPriority)) {
+        bestCost = c; bestPriority = priority; best = perm;
+      }
     }
     // Map back to bin objects
     return best.map(k => bins.find(b => getBinNodeKey(b) === k)).filter(Boolean);
@@ -1032,8 +1048,13 @@ function calculateShortestRoute() {
   let unvisited = [...targetKeys], route = [], cur = 'depot';
   while (unvisited.length > 0) {
     const { dist } = dijkstra(cur);
-    let best = null, bd = Infinity;
-    for (const uk of unvisited) { if (dist[uk] < bd) { bd = dist[uk]; best = uk; } }
+    let best = null, bd = Infinity, bp = -Infinity;
+    for (const uk of unvisited) {
+      const priority = fillByKey[uk] || 0;
+      if (dist[uk] < bd || (Math.abs(dist[uk] - bd) < 0.001 && priority > bp)) {
+        bd = dist[uk]; bp = priority; best = uk;
+      }
+    }
     route.push(best); cur = best;
     unvisited = unvisited.filter(u => u !== best);
   }
@@ -1046,15 +1067,17 @@ function findAlternativeRoutes(bestBinRoute) {
   if (bestBinRoute.length === 0) return [];
 
   const targetKeys = bestBinRoute.map(b => getBinNodeKey(b)).filter(Boolean);
+  const fillByKey = Object.fromEntries(bestBinRoute.map(b => [getBinNodeKey(b), avgFill(b)]).filter(([key]) => key));
   const alternatives = [];
 
   // Collect all permutations with their costs
   const results = [];
   for (const perm of getPermutations(targetKeys)) {
     const cost = graphRouteTotalCost(['depot', ...perm]);
-    results.push({ perm, cost });
+    const priority = routePriorityScore(perm, fillByKey);
+    results.push({ perm, cost, priority });
   }
-  results.sort((a, b) => a.cost - b.cost);
+  results.sort((a, b) => (a.cost - b.cost) || (b.priority - a.priority));
 
   // Take the next-best distinct permutations (skip the optimal, take up to MAX_ALTS)
   const seen = new Set([results[0].perm.join('|')]);
@@ -1062,14 +1085,11 @@ function findAlternativeRoutes(bestBinRoute) {
     const key = results[i].perm.join('|');
     if (seen.has(key)) continue;
     seen.add(key);
-    // Allow even tiny cost differences (>=1% worse than best)
-    if (results[i].cost >= results[0].cost * 1.01) {
-      alternatives.push({
-        cost: results[i].cost,
-        path: buildShortestEdgePath(['depot', ...results[i].perm, 'depot']),
-        binOrder: results[i].perm,
-      });
-    }
+    alternatives.push({
+      cost: results[i].cost,
+      path: buildShortestEdgePath(['depot', ...results[i].perm, 'depot']),
+      binOrder: results[i].perm,
+    });
   }
   return alternatives;
 }
@@ -1098,6 +1118,19 @@ function getPermutations(arr) {
     for (const perm of getPermutations(rest)) result.push([arr[i], ...perm]);
   }
   return result;
+}
+
+function routePriorityScore(nodeOrder, fillByKey) {
+  const len = nodeOrder.length;
+  return nodeOrder.reduce((score, key, idx) => {
+    const fill = fillByKey[key] || 0;
+    return score + fill * (len - idx);
+  }, 0);
+}
+
+function isBetterRoute(cost, priority, bestCost, bestPriority) {
+  if (cost < bestCost) return true;
+  return Math.abs(cost - bestCost) < 0.001 && priority > bestPriority;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1415,6 +1448,7 @@ function generateRoute() {
 
   const sorted = calculateShortestRoute();
   if (sorted.length === 0) {
+    resetRoutePanel('Toplanacak kova yok.<br/>Tüm kovalar %10 eşiğinin altında.');
     showToast('Tüm kovalar zaten boş (%10 altı).', 'warning');
     return;
   }
@@ -1486,12 +1520,13 @@ function renderAltSummary(alts, bestCost) {
         return bin ? `${bin.location_icon} ${bin.location}` : k;
       }).join(' → ');
       const diff = Math.round(((alt.cost - bestCost) / bestCost) * 100);
+      const diffLabel = diff <= 0 ? 'aynı mesafe' : `+%${diff} daha uzun`;
       return `
         <div class="alt-item">
           <span class="alt-dot" style="background:${meta.color}"></span>
           <div class="alt-body">
             <div class="alt-order">${order}</div>
-            <div class="alt-meta">${Math.round(alt.cost)}m · <span style="color:${meta.color}">+%${diff}</span> daha uzun</div>
+            <div class="alt-meta">${Math.round(alt.cost)}m · <span style="color:${meta.color}">${diffLabel}</span></div>
           </div>
         </div>`;
     }).join('')}
@@ -1519,11 +1554,7 @@ document.getElementById('btnStartRoute').addEventListener('click', async () => {
   }
   showToast('🚛 Rota tamamlandı! Tüm kovalar boşaltıldı.', 'success');
   addHistoryItem('Rota Tamamlandı', `${currentRoute.length} kova toplandı`);
-  stopRouteAnimation();
-  drawMap();
-  routeList.classList.add('hidden');
-  routeInfo.classList.add('hidden');
-  routeEmpty.classList.remove('hidden');
+  resetRoutePanel(ROUTE_EMPTY_DEFAULT_HTML);
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -1612,8 +1643,64 @@ function addHistoryItem(title, meta, prepend = true) {
 // SIMULATION (per-bin controls)
 // ══════════════════════════════════════════════════════════════════
 
+const SIMULATION_SCENARIOS = [
+  {
+    id: 'scenario-ders',
+    icon: '🏫',
+    name: 'Ders binası çıkışı',
+    desc: 'Ders binası kritik, diğerleri orta seviyede.',
+    route: 'Öncelik: Ders → Kütüphane → Yemekhane',
+    levels: { ders: 96, kutuphane: 55, yemekhane: 33 },
+  },
+  {
+    id: 'scenario-kutuphane',
+    icon: '📚',
+    name: 'Kütüphane yoğun',
+    desc: 'Kütüphane kritik, kampüsün kalanında orta doluluk.',
+    route: 'Öncelik: Kütüphane → Yemekhane → Ders',
+    levels: { kutuphane: 94, yemekhane: 38, ders: 62 },
+  },
+  {
+    id: 'scenario-yemekhane',
+    icon: '🍽️',
+    name: 'Yemekhane saati',
+    desc: 'Yemekhane kritik, rota doğu kanadından başlar.',
+    route: 'Öncelik: Yemekhane → Kütüphane → Ders',
+    levels: { yemekhane: 95, ders: 60, kutuphane: 36 },
+  },
+  {
+    id: 'scenario-top-road',
+    icon: '🧭',
+    name: 'Üst hat toplama',
+    desc: 'Yalnızca kütüphane ve yemekhane eşik üstünde.',
+    route: 'Hedef: Yemekhane → Kütüphane',
+    levels: { yemekhane: 88, kutuphane: 84, ders: 8 },
+  },
+  {
+    id: 'scenario-all-critical',
+    icon: '🚨',
+    name: 'Tüm kampüs kritik',
+    desc: 'Üç kova da toplama eşiğinin belirgin üstünde.',
+    route: 'Hedef: 3 duraklı tam rota',
+    levels: { ders: 86, kutuphane: 82, yemekhane: 78 },
+  },
+  {
+    id: 'scenario-clear',
+    icon: '🧹',
+    name: 'Temiz başlangıç',
+    desc: 'Tüm kovalar %10 eşiğinin altında kalır.',
+    route: 'Beklenen: rota oluşmaz',
+    levels: { ders: 7, kutuphane: 6, yemekhane: 8 },
+  },
+];
+
+const SCENARIO_CATEGORY_OFFSETS = { plastic: 0, paper: -4, organic: 6, glass: -7, metal: 3 };
+
 function setupEventListeners() {
+  buildScenarioControls();
+
   document.getElementById('btnSimulate').addEventListener('click', () => {
+    buildScenarioControls();
     buildSimBinControls();
     simModal.classList.remove('hidden');
   });
@@ -1643,6 +1730,66 @@ function setupEventListeners() {
       autoFillTimer = null;
     }
   });
+}
+
+function buildScenarioControls() {
+  const grid = document.getElementById('simScenarioGrid');
+  if (!grid || grid.dataset.ready === 'true') return;
+
+  grid.innerHTML = SIMULATION_SCENARIOS.map(scenario => `
+    <button type="button" class="sim-scenario-card" data-scenario="${scenario.id}">
+      <div class="sim-scenario-top">
+        <span class="sim-scenario-icon">${scenario.icon}</span>
+        <span class="sim-scenario-name">${scenario.name}</span>
+      </div>
+      <div class="sim-scenario-desc">${scenario.desc}</div>
+      <div class="sim-scenario-route">${scenario.route}</div>
+    </button>
+  `).join('');
+
+  grid.querySelectorAll('.sim-scenario-card').forEach(card => {
+    card.addEventListener('click', () => applySimulationScenario(card.dataset.scenario));
+  });
+  grid.dataset.ready = 'true';
+}
+
+function setActiveScenario(scenarioId) {
+  document.querySelectorAll('.sim-scenario-card').forEach(card => {
+    card.classList.toggle('active', card.dataset.scenario === scenarioId);
+  });
+}
+
+function scenarioCategoryLevel(baseLevel, category) {
+  if (baseLevel <= 10) return Math.max(0, Math.min(100, baseLevel));
+  const offset = SCENARIO_CATEGORY_OFFSETS[category] || 0;
+  return Math.max(0, Math.min(100, Math.round(baseLevel + offset)));
+}
+
+async function applySimulationScenario(scenarioId) {
+  const scenario = SIMULATION_SCENARIOS.find(item => item.id === scenarioId);
+  if (!scenario || !bins.length) return;
+
+  const cards = Array.from(document.querySelectorAll('.sim-scenario-card'));
+  cards.forEach(card => { card.disabled = true; });
+  try {
+    resetRoutePanel(ROUTE_EMPTY_DEFAULT_HTML);
+    for (const bin of bins) {
+      const key = getBinNodeKey(bin);
+      if (!key || scenario.levels[key] === undefined) continue;
+      for (const cat of (bin.categories || [])) {
+        await persistCategoryLevel(cat, scenarioCategoryLevel(scenario.levels[key], cat.category));
+      }
+    }
+
+    renderBins();
+    updateStats();
+    buildSimBinControls();
+    setActiveScenario(scenarioId);
+    recordHistorySnapshotNow();
+    generateRoute();
+  } finally {
+    cards.forEach(card => { card.disabled = false; });
+  }
 }
 
 const CAT_NAMES = { plastic: 'Plastik', paper: 'Kağıt', organic: 'Organik', glass: 'Cam', metal: 'Metal' };

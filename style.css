@@ -669,6 +669,71 @@ body::before {
 .btn-sim-action.random { color: var(--warning); border-color: rgba(245,158,11,0.2); }
 .btn-sim-action.random:hover { background: rgba(245,158,11,0.08); }
 
+.sim-scenarios {
+  margin-bottom: 1rem;
+}
+.sim-scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.sim-scenario-card {
+  min-height: 92px;
+  padding: 0.75rem 0.8rem;
+  text-align: left;
+  background: var(--bg-card2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font);
+  cursor: pointer;
+  transition: transform 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
+}
+.sim-scenario-card:hover,
+.sim-scenario-card.active {
+  transform: translateY(-1px);
+  border-color: rgba(34,197,94,0.42);
+  background: rgba(34,197,94,0.07);
+}
+.sim-scenario-card:disabled {
+  cursor: wait;
+  opacity: 0.68;
+  transform: none;
+}
+.sim-scenario-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.sim-scenario-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: rgba(255,240,220,0.06);
+  flex: 0 0 auto;
+}
+.sim-scenario-name {
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.sim-scenario-desc {
+  color: var(--text-sec);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+.sim-scenario-route {
+  margin-top: 6px;
+  color: var(--primary);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .sim-auto { border-top: 1px solid var(--border); padding-top: 1rem; }
 .sim-toggle-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 0.82rem; }
 
@@ -1020,6 +1085,7 @@ body::before {
   }
   .charts-grid { grid-template-columns: 1fr; }
   .charts-section { padding: 1rem; }
+  .sim-scenario-grid { grid-template-columns: 1fr; }
 
   /* Sim modal: stack category controls vertically on small screens */
   .sim-cat-row {
