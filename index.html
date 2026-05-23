@@ -94,29 +94,55 @@
 
     <!-- RIGHT: Route panel -->
     <aside class="route-section">
-      <div class="route-header">
-        <h2 class="route-title">🗺️ Toplama Rotası</h2>
-        <button id="btnGenerateRoute" class="btn-route">Rota Oluştur</button>
+      <div class="route-primary-panel">
+        <div class="route-header">
+          <h2 class="route-title">🗺️ Toplama Rotası</h2>
+          <button id="btnGenerateRoute" class="btn-route">Rota Oluştur</button>
+        </div>
+
+        <div id="routeEmpty" class="route-empty">
+          <div class="route-empty-icon">🛣️</div>
+          <p>Doluluk verilerine göre<br/>otomatik rota oluşturmak için<br/>butona tıklayın.</p>
+        </div>
+
+        <div id="routeList" class="route-list hidden"></div>
+
+        <div id="routeInfo" class="route-info hidden">
+          <div class="route-info-row">
+            <span>🏁 Başlangıç:</span><span>Merkezi Depo</span>
+          </div>
+          <div class="route-info-row">
+            <span>⏱️ Tahmini Süre:</span><span id="routeTime">–</span>
+          </div>
+          <div class="route-info-row">
+            <span>📦 Toplam Atık:</span><span id="routeWaste">–</span>
+          </div>
+          <div class="route-info-row">
+            <span>🕒 Günlük Süre:</span><span id="routeDailyTime">–</span>
+          </div>
+          <button id="btnStartRoute" class="btn-start-route">🚛 Rotayı Başlat</button>
+        </div>
       </div>
 
-      <div id="routeEmpty" class="route-empty">
-        <div class="route-empty-icon">🛣️</div>
-        <p>Doluluk verilerine göre<br/>otomatik rota oluşturmak için<br/>butona tıklayın.</p>
-      </div>
-
-      <div id="routeList" class="route-list hidden"></div>
-
-      <div id="routeInfo" class="route-info hidden">
-        <div class="route-info-row">
-          <span>🏁 Başlangıç:</span><span>Merkezi Depo</span>
+      <!-- Gamification -->
+      <div class="gamification-panel">
+        <div class="gamification-header">
+          <div>
+            <h3 class="history-title">🏆 Puan Durumu</h3>
+            <p id="gamificationStatus" class="gamification-status">Öğrenci verisi hazırlanıyor</p>
+          </div>
+          <span class="points-chip">Atık Puanları</span>
         </div>
-        <div class="route-info-row">
-          <span>⏱️ Tahmini Süre:</span><span id="routeTime">–</span>
+        <div id="leaderboardList" class="leaderboard-list">
+          <p class="history-empty">Öğrenci verisi bekleniyor.</p>
         </div>
-        <div class="route-info-row">
-          <span>📦 Toplam Atık:</span><span id="routeWaste">–</span>
+        <div class="feed-header">
+          <h3 class="history-title">📡 Canlı Akış</h3>
+          <span class="feed-live-dot">Canlı</span>
         </div>
-        <button id="btnStartRoute" class="btn-start-route">🚛 Rotayı Başlat</button>
+        <div id="feedList" class="feed-list">
+          <p class="history-empty">Henüz puan hareketi yok.</p>
+        </div>
       </div>
 
       <!-- Collection history -->
@@ -165,6 +191,80 @@
           <div class="map-hint">Kova detayları için marker'a tıklayın</div>
         </div>
       </div>
+
+      <div class="map-support-grid">
+        <section class="route-primary-panel map-route-panel">
+          <div class="route-header">
+            <h3 class="route-title">🗺️ Toplama Rotası</h3>
+            <span class="panel-note">Haritadaki güncel rota</span>
+          </div>
+
+          <div id="mapRouteEmpty" class="route-empty compact">
+            <div class="route-empty-icon">🛣️</div>
+            <p>Rota oluşturulduğunda duraklar, süre ve günlük süre burada görünür.</p>
+          </div>
+
+          <div id="mapRouteList" class="route-list hidden"></div>
+
+          <div id="mapRouteInfo" class="route-info hidden">
+            <div class="route-info-row">
+              <span>🏁 Başlangıç:</span><span>Merkezi Depo</span>
+            </div>
+            <div class="route-info-row">
+              <span>⏱️ Tahmini Süre:</span><span id="mapRouteTime">–</span>
+            </div>
+            <div class="route-info-row">
+              <span>📦 Toplam Atık:</span><span id="mapRouteWaste">–</span>
+            </div>
+            <div class="route-info-row">
+              <span>🕒 Günlük Süre:</span><span id="mapRouteDailyTime">–</span>
+            </div>
+            <button id="btnMapStartRoute" class="btn-start-route">🚛 Rotayı Başlat</button>
+          </div>
+
+          <div id="mapRouteCompletion" class="route-completion hidden" aria-live="polite">
+            <div class="route-completion-icon">✓</div>
+            <div class="route-completion-body">
+              <strong>Rota tamamlandı</strong>
+              <span id="mapRouteCompletionDetail">Kovalar toplandı ve kayıt güncellendi.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="map-alt-panel">
+          <h3 class="history-title">Alternatif Rotalar</h3>
+          <div id="mapAltSummary" class="alt-summary embedded">
+            <p class="history-empty">Rota oluşturulduğunda alternatifler burada görünür.</p>
+          </div>
+        </section>
+
+        <section class="gamification-panel map-gamification-panel">
+          <div class="gamification-header">
+            <div>
+              <h3 class="history-title">🏆 Puan Durumu</h3>
+              <p id="mapGamificationStatus" class="gamification-status">Öğrenci verisi hazırlanıyor</p>
+            </div>
+            <span class="points-chip">Atık Puanları</span>
+          </div>
+          <div id="mapLeaderboardList" class="leaderboard-list">
+            <p class="history-empty">Öğrenci verisi bekleniyor.</p>
+          </div>
+          <div class="feed-header">
+            <h3 class="history-title">📡 Canlı Akış</h3>
+            <span class="feed-live-dot">Canlı</span>
+          </div>
+          <div id="mapFeedList" class="feed-list">
+            <p class="history-empty">Henüz puan hareketi yok.</p>
+          </div>
+        </section>
+
+        <section class="history-panel map-history-panel">
+          <h3 class="history-title">📋 Toplama Geçmişi</h3>
+          <div id="mapHistoryList" class="history-list">
+            <p class="history-empty">Henüz toplama yapılmadı.</p>
+          </div>
+        </section>
+      </div>
     </section>
   </div><!-- /panel-map -->
 
@@ -195,44 +295,49 @@
 
   <!-- ─── SIMULATION MODAL ────────────────────────────────── -->
   <div id="simModal" class="modal-overlay hidden">
-    <div class="modal modal-wide">
+    <div class="modal modal-wide sim-modal">
       <div class="modal-header">
         <h2>⚡ Simülasyon Modu</h2>
         <button id="closeSimModal" class="modal-close">✕</button>
       </div>
       <p class="modal-desc">Hazır senaryolarla farklı doluluk dağılımlarını deneyin veya her kova için atık türlerini ayrı ayrı düzenleyin. Değişiklikler anında veritabanına yazılır.</p>
 
-      <div class="sim-scenarios">
-        <label class="sim-label">Hazır Senaryolar</label>
-        <div id="simScenarioGrid" class="sim-scenario-grid" aria-label="Hazır simülasyon senaryoları"></div>
-      </div>
+      <div class="sim-layout">
+        <div class="sim-side">
+          <div class="sim-scenarios">
+            <label class="sim-label">Hazır Senaryolar</label>
+            <div id="simScenarioGrid" class="sim-scenario-grid" aria-label="Hazır simülasyon senaryoları"></div>
+          </div>
 
-      <div id="simBinControls" class="sim-bin-controls"></div>
+          <div class="sim-global">
+            <label class="sim-label">Global İşlem Kapsamı</label>
+            <div class="sim-global-row">
+              <select id="simCatSelect" class="sim-select sim-select-inline">
+                <option value="all">Tüm atık türleri</option>
+                <option value="plastic">♳ Plastik</option>
+                <option value="paper">📄 Kağıt</option>
+                <option value="organic">🌿 Organik</option>
+                <option value="glass">🍶 Cam</option>
+                <option value="metal">🥫 Metal</option>
+              </select>
+              <button id="simRandom" class="btn-sim-action random wide">🎲 Rastgele Doldur</button>
+            </div>
+          </div>
 
-      <div class="sim-global">
-        <label class="sim-label">Global İşlem Kapsamı</label>
-        <div class="sim-global-row">
-          <select id="simCatSelect" class="sim-select sim-select-inline">
-            <option value="all">Tüm atık türleri</option>
-            <option value="plastic">♳ Plastik</option>
-            <option value="paper">📄 Kağıt</option>
-            <option value="organic">🌿 Organik</option>
-            <option value="glass">🍶 Cam</option>
-            <option value="metal">🥫 Metal</option>
-          </select>
-          <button id="simRandom" class="btn-sim-action random wide">🎲 Rastgele Doldur</button>
+          <div class="sim-auto">
+            <label class="sim-label">Otomatik Artış (5 sn aralıklarla)</label>
+            <div class="sim-toggle-row">
+              <label class="toggle">
+                <input type="checkbox" id="autoFillToggle" />
+                <span class="toggle-slider"></span>
+              </label>
+              <span id="autoFillStatus" class="auto-fill-status off">Kapalı</span>
+              <span id="autoFillLastSaved" class="auto-fill-meta off">Otomatik artış durdu.</span>
+            </div>
+          </div>
         </div>
-      </div>
 
-      <div class="sim-auto">
-        <label class="sim-label">Otomatik Artış (5 sn aralıklarla)</label>
-        <div class="sim-toggle-row">
-          <label class="toggle">
-            <input type="checkbox" id="autoFillToggle" />
-            <span class="toggle-slider"></span>
-          </label>
-          <span id="autoFillStatus">Kapalı</span>
-        </div>
+        <div id="simBinControls" class="sim-bin-controls"></div>
       </div>
     </div>
   </div>
@@ -259,7 +364,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
           onerror="window.supabase=null" defer></script>
-  <script src="config.js?v=16" defer></script>
-  <script src="app.js?v=16" defer></script>
+  <script src="config.js?v=17" defer></script>
+  <script src="app.js?v=17" defer></script>
 </body>
 </html>

@@ -153,11 +153,32 @@ function createSupabaseRestClient(baseUrl, anonKey) {
 let bins = [];
 let collectionCount = 0;
 let autoFillTimer = null;
+let autoFillInFlight = false;
+let autoFillRunId = 0;
 let selectedBinId = null;
 let currentRoute = [];
 let altRoutes = [];
 let routeAnimOffset = 0;
 let routeAnimFrame = null;
+let gamificationRemoteAvailable = false;
+const DEFAULT_STUDENTS = [
+  { id: 'demo-student-1', card_id: 'CARD-001', full_name: 'Ahmet Yılmaz', total_points: 45 },
+  { id: 'demo-student-2', card_id: 'CARD-002', full_name: 'Ayşe Demir', total_points: 20 },
+  { id: 'demo-student-3', card_id: 'CARD-003', full_name: 'Mehmet Kaya', total_points: 12 },
+];
+let students = DEFAULT_STUDENTS.map(student => ({ ...student }));
+const POINTS_MAP = { metal: 10, glass: 7, plastic: 5, paper: 3, organic: 2 };
+const AUTO_FILL_ENABLED_KEY = 'ecoroute_auto_fill_enabled';
+const AUTO_FILL_DETAIL_KEY = 'ecoroute_auto_fill_detail';
+const COLLECTION_METERS_PER_MINUTE = 7;
+const COLLECTION_SERVICE_MINUTES_PER_STOP = 4;
+const COLLECTION_FIXED_MINUTES = 5;
+const ALT_ROUTE_STRATEGIES = [
+  { label: 'Dengeli servis hattı', extraDistanceM: 12, timePenaltyMin: 2 },
+  { label: 'Doğu çevre yolu', extraDistanceM: 24, timePenaltyMin: 4 },
+  { label: 'Yoğunluk öncelikli sıra', extraDistanceM: 8, timePenaltyMin: 3 },
+  { label: 'Yan yol denemesi', extraDistanceM: 18, timePenaltyMin: 3 },
+];
 
 // ── DOM refs ─────────────────────────────────────────────────────
 const binsGrid = document.getElementById('binsGrid');
@@ -170,9 +191,20 @@ const routeList = document.getElementById('routeList');
 const routeInfo = document.getElementById('routeInfo');
 const routeTime = document.getElementById('routeTime');
 const routeWaste = document.getElementById('routeWaste');
+const routeDailyTime = document.getElementById('routeDailyTime');
+const mapRouteEmpty = document.getElementById('mapRouteEmpty');
+const mapRouteList = document.getElementById('mapRouteList');
+const mapRouteInfo = document.getElementById('mapRouteInfo');
+const mapRouteTime = document.getElementById('mapRouteTime');
+const mapRouteWaste = document.getElementById('mapRouteWaste');
+const mapRouteDailyTime = document.getElementById('mapRouteDailyTime');
+const mapRouteCompletion = document.getElementById('mapRouteCompletion');
+const mapRouteCompletionDetail = document.getElementById('mapRouteCompletionDetail');
+const mapAltSummary = document.getElementById('mapAltSummary');
 const ROUTE_EMPTY_DEFAULT_HTML = 'Doluluk verilerine göre<br/>otomatik rota oluşturmak için<br/>butona tıklayın.';
 
 const historyList = document.getElementById('historyList');
+const mapHistoryList = document.getElementById('mapHistoryList');
 const toast = document.getElementById('toast');
 
 const simModal = document.getElementById('simModal');
@@ -180,6 +212,14 @@ const binModal = document.getElementById('binModal');
 const binModalTitle = document.getElementById('binModalTitle');
 const binModalContent = document.getElementById('binModalContent');
 const dataSourceStatus = document.getElementById('dataSourceStatus');
+const autoFillStatus = document.getElementById('autoFillStatus');
+const autoFillLastSaved = document.getElementById('autoFillLastSaved');
+const leaderboardList = document.getElementById('leaderboardList');
+const mapLeaderboardList = document.getElementById('mapLeaderboardList');
+const feedList = document.getElementById('feedList');
+const mapFeedList = document.getElementById('mapFeedList');
+const gamificationStatus = document.getElementById('gamificationStatus');
+const mapGamificationStatus = document.getElementById('mapGamificationStatus');
 const mapAvgFill = document.getElementById('mapAvgFill');
 const mapCritical = document.getElementById('mapCritical');
 const mapHotspot = document.getElementById('mapHotspot');
@@ -276,6 +316,9 @@ async function init() {
   connectSupabase();
   renderBinsOffline();
   updateDataSourceStatus('loading', 'DB kontrol ediliyor');
+  renderLeaderboard();
+  renderFeedItems([]);
+  updateGamificationStatus('demo', 'Demo puan verisi');
   setupEventListeners();
   initMap();
 
@@ -287,17 +330,21 @@ async function init() {
       updateDataSourceStatus('demo', 'Demo veri');
       loadLocalHistory();
       startHistorySnapshot();
+      restoreAutoFillSetting();
       return;
     }
     setupRealtime();
     await loadCollectionHistory();
+    await loadGamificationData();
     await ensureHistoryTable();
     await loadHistoryData();
     startHistorySnapshot();
+    restoreAutoFillSetting();
   } else {
     updateDataSourceStatus('demo', 'Demo veri');
     loadLocalHistory();
     startHistorySnapshot();
+    restoreAutoFillSetting();
   }
 }
 
@@ -305,6 +352,70 @@ function updateDataSourceStatus(kind, text) {
   if (!dataSourceStatus) return;
   dataSourceStatus.textContent = text;
   dataSourceStatus.className = `data-source-status ${kind}`;
+}
+
+function updateGamificationStatus(kind, text) {
+  [gamificationStatus, mapGamificationStatus].filter(Boolean).forEach(el => {
+    el.textContent = text;
+    el.className = `gamification-status ${kind}`;
+  });
+}
+
+function updateAutoFillStatus(kind, detail = '') {
+  if (autoFillStatus) {
+    autoFillStatus.textContent = kind === 'running'
+      ? 'Açık'
+      : kind === 'saving'
+        ? 'Kaydediliyor'
+        : kind === 'error'
+          ? 'Hata'
+          : 'Kapalı';
+    autoFillStatus.className = `auto-fill-status ${kind}`;
+  }
+  if (autoFillLastSaved) {
+    autoFillLastSaved.textContent = detail;
+    autoFillLastSaved.className = `auto-fill-meta ${kind}`;
+  }
+}
+
+function readStoredAutoFillEnabled() {
+  try {
+    return localStorage.getItem(AUTO_FILL_ENABLED_KEY) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeStoredAutoFillEnabled(enabled) {
+  try {
+    localStorage.setItem(AUTO_FILL_ENABLED_KEY, enabled ? '1' : '0');
+  } catch (_) {}
+}
+
+function readStoredAutoFillDetail() {
+  try {
+    return localStorage.getItem(AUTO_FILL_DETAIL_KEY) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function writeStoredAutoFillDetail(detail) {
+  try {
+    localStorage.setItem(AUTO_FILL_DETAIL_KEY, detail || '');
+  } catch (_) {}
+}
+
+function restoreAutoFillSetting() {
+  const toggle = document.getElementById('autoFillToggle');
+  const storedDetail = readStoredAutoFillDetail();
+  if (readStoredAutoFillEnabled()) {
+    if (toggle) toggle.checked = true;
+    startAutoFill({ persist: false });
+  } else {
+    if (toggle) toggle.checked = false;
+    updateAutoFillStatus('off', storedDetail || 'Otomatik artış durdu.');
+  }
 }
 
 function startAppWhenReady() {
@@ -949,10 +1060,39 @@ function resetRoutePanel(messageHtml) {
   routeList.innerHTML = '';
   routeList.classList.add('hidden');
   routeInfo.classList.add('hidden');
+  if (routeDailyTime) routeDailyTime.textContent = '–';
+  if (mapRouteList) {
+    mapRouteList.innerHTML = '';
+    mapRouteList.classList.add('hidden');
+  }
+  if (mapRouteInfo) mapRouteInfo.classList.add('hidden');
+  if (mapRouteTime) mapRouteTime.textContent = '–';
+  if (mapRouteWaste) mapRouteWaste.textContent = '–';
+  if (mapRouteDailyTime) mapRouteDailyTime.textContent = '–';
+  if (mapRouteCompletion) mapRouteCompletion.classList.add('hidden');
+  if (mapRouteCompletionDetail) mapRouteCompletionDetail.textContent = 'Kovalar toplandı ve kayıt güncellendi.';
+  if (mapRouteEmpty) mapRouteEmpty.classList.remove('hidden');
+  if (mapAltSummary) {
+    mapAltSummary.innerHTML = '<p class="history-empty">Rota oluşturulduğunda alternatifler burada görünür.</p>';
+  }
   routeEmpty.classList.remove('hidden');
   const emptyText = routeEmpty.querySelector('p');
   if (emptyText && messageHtml) emptyText.innerHTML = messageHtml;
   drawMap();
+}
+
+function showMapRouteCompletion(routeCount, metric) {
+  if (!mapRouteCompletion) return;
+  const time = new Date().toLocaleTimeString('tr-TR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  if (mapRouteEmpty) mapRouteEmpty.classList.add('hidden');
+  if (mapRouteCompletionDetail) {
+    mapRouteCompletionDetail.textContent =
+      `${routeCount} kova toplandı · ${metric.total_minutes} dk/gün · ${time}`;
+  }
+  mapRouteCompletion.classList.remove('hidden');
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1023,6 +1163,59 @@ function graphRouteTotalCost(nodeOrder) {
   return total;
 }
 
+function calculateCollectionTimeMetric(routeBins, totalFillScore = 0, source = 'planned', distanceOverride = null, timePenaltyMin = 0) {
+  const routeDistance = distanceOverride ?? graphRouteTotalCost(routeNodeOrder(routeBins));
+  const stopCount = routeBins.length;
+  const driveMinutes = Math.ceil(routeDistance / COLLECTION_METERS_PER_MINUTE) + timePenaltyMin;
+  const serviceMinutes = stopCount * COLLECTION_SERVICE_MINUTES_PER_STOP;
+  const totalMinutes = Math.max(
+    0,
+    Math.round(driveMinutes + serviceMinutes + COLLECTION_FIXED_MINUTES)
+  );
+
+  return {
+    metric_date: new Date().toISOString().slice(0, 10),
+    source,
+    route_order: routeBins.map(bin => ({
+      id: bin.id,
+      location: bin.location,
+      fill: avgFill(bin),
+    })),
+    stop_count: stopCount,
+    route_distance_m: Math.round(routeDistance),
+    drive_minutes: Math.round(driveMinutes),
+    service_minutes: serviceMinutes,
+    fixed_minutes: COLLECTION_FIXED_MINUTES,
+    total_minutes: totalMinutes,
+    total_fill_score: Math.round(totalFillScore),
+    algorithm: {
+      meters_per_minute: COLLECTION_METERS_PER_MINUTE,
+      service_minutes_per_stop: COLLECTION_SERVICE_MINUTES_PER_STOP,
+      fixed_minutes: COLLECTION_FIXED_MINUTES,
+      time_penalty_min: timePenaltyMin,
+      formula: 'ceil(distance_m / meters_per_minute) + stop_count * service_minutes_per_stop + fixed_minutes + time_penalty_min',
+    },
+  };
+}
+
+function formatCollectionTimeMetric(metric) {
+  if (!metric) return '–';
+  return `${metric.total_minutes} dk/gün (sürüş ${metric.drive_minutes} + servis ${metric.service_minutes})`;
+}
+
+async function saveDailyCollectionTimeMetric(routeBins, totalFillScore, source = 'planned', metric = null) {
+  if (IS_DEMO || !supabaseClient || !routeBins.length) return;
+  const payload = metric
+    ? { ...metric, source }
+    : calculateCollectionTimeMetric(routeBins, totalFillScore, source);
+  try {
+    const { error } = await supabaseClient.from('daily_collection_time_metrics').insert(payload);
+    if (error) console.warn('Günlük toplama süresi kaydedilemedi:', error.message);
+  } catch (e) {
+    console.warn('Günlük toplama süresi kaydedilemedi:', e.message);
+  }
+}
+
 function calculateShortestRoute() {
   const targetBins = bins.filter(b => avgFill(b) > 10);
   if (targetBins.length === 0) return [];
@@ -1069,6 +1262,7 @@ function findAlternativeRoutes(bestBinRoute) {
   const targetKeys = bestBinRoute.map(b => getBinNodeKey(b)).filter(Boolean);
   const fillByKey = Object.fromEntries(bestBinRoute.map(b => [getBinNodeKey(b), avgFill(b)]).filter(([key]) => key));
   const alternatives = [];
+  const bestKey = targetKeys.join('|');
 
   // Collect all permutations with their costs
   const results = [];
@@ -1079,18 +1273,49 @@ function findAlternativeRoutes(bestBinRoute) {
   }
   results.sort((a, b) => (a.cost - b.cost) || (b.priority - a.priority));
 
-  // Take the next-best distinct permutations (skip the optimal, take up to MAX_ALTS)
-  const seen = new Set([results[0].perm.join('|')]);
-  for (let i = 1; i < results.length && alternatives.length < MAX_ALTS; i++) {
-    const key = results[i].perm.join('|');
-    if (seen.has(key)) continue;
+  const seen = new Set([bestKey]);
+  function pushAlternative(perm, baseCost, strategy) {
+    const key = `${perm.join('|')}|${strategy.label}`;
+    if (seen.has(key) || alternatives.length >= MAX_ALTS) return;
     seen.add(key);
+    const adjustedCost = Math.round(baseCost + strategy.extraDistanceM);
+    const routeBins = perm.map(k => bins.find(b => getBinNodeKey(b) === k)).filter(Boolean);
+    const metric = calculateCollectionTimeMetric(
+      routeBins,
+      routeBins.reduce((sum, bin) => sum + avgFill(bin), 0),
+      'planned',
+      adjustedCost,
+      strategy.timePenaltyMin
+    );
     alternatives.push({
-      cost: results[i].cost,
-      path: buildShortestEdgePath(['depot', ...results[i].perm, 'depot']),
-      binOrder: results[i].perm,
+      cost: adjustedCost,
+      baseCost,
+      strategy: strategy.label,
+      metric,
+      path: buildShortestEdgePath(['depot', ...perm, 'depot']),
+      binOrder: perm,
     });
   }
+
+  // Take distinct permutations first, then add operational variants so the simulation
+  // can compare routes even when the graph has equal shortest-path costs.
+  let strategyIndex = 0;
+  for (let i = 1; i < results.length && alternatives.length < MAX_ALTS; i++) {
+    const permKey = results[i].perm.join('|');
+    if (permKey === bestKey) continue;
+    pushAlternative(results[i].perm, results[i].cost, ALT_ROUTE_STRATEGIES[strategyIndex % ALT_ROUTE_STRATEGIES.length]);
+    strategyIndex++;
+  }
+
+  for (let i = 0; alternatives.length < MAX_ALTS && i < ALT_ROUTE_STRATEGIES.length; i++) {
+    const route = results[(i + 1) % results.length] || results[0];
+    const perm = route?.perm || targetKeys;
+    const rotated = perm.length > 1
+      ? [...perm.slice(i % perm.length), ...perm.slice(0, i % perm.length)]
+      : perm;
+    pushAlternative(rotated, graphRouteTotalCost(['depot', ...rotated]), ALT_ROUTE_STRATEGIES[i]);
+  }
+
   return alternatives;
 }
 
@@ -1366,12 +1591,19 @@ function setupRealtime() {
         if (existing) binsGrid.replaceChild(createBinCard(bins[binIndex]), existing);
         updateStats();
         drawMap();
+        refreshRouteFromCurrentData();
         // If simulation modal is open, refresh that bin's controls live
         if (simModal && !simModal.classList.contains('hidden')) {
           renderSimBinCard(bins[binIndex]);
         }
       }
     })
+    .subscribe();
+
+  supabaseClient
+    .channel('gamification_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'students' }, loadStudents)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'waste_transactions' }, loadWasteTransactionFeed)
     .subscribe();
 }
 
@@ -1443,14 +1675,39 @@ document.getElementById('btnGenerateRoute').addEventListener('click', generateRo
 const btnMapGenerateRoute = document.getElementById('btnMapGenerateRoute');
 if (btnMapGenerateRoute) btnMapGenerateRoute.addEventListener('click', generateRoute);
 
-function generateRoute() {
-  if (!bins.length) return;
+function buildRouteStopsHtml(sorted) {
+  return sorted.map((bin, i) => {
+    const fill = avgFill(bin), status = binStatus(fill);
+    const pClass = status === 'critical' ? 'badge-critical' : status === 'warning' ? 'badge-warning' : 'badge-ok';
+    const pText = status === 'critical' ? 'Kritik' : status === 'warning' ? 'Orta' : 'Düşük';
+
+    const fromKey = i === 0 ? 'depot' : getBinNodeKey(sorted[i - 1]);
+    const toKey = getBinNodeKey(bin);
+    const { dist } = dijkstra(fromKey);
+    const legCost = Math.round(dist[toKey] || 0);
+    const legColor = LEG_COLORS[i % LEG_COLORS.length];
+
+    return `
+      <div class="route-stop">
+        <div class="stop-num" style="background:${legColor};color:#0c0a09">${i + 1}</div>
+        <div class="stop-body">
+          <div class="stop-name">${escapeHtml(bin.location_icon)} ${escapeHtml(bin.location)}</div>
+          <div class="stop-fill">Doluluk: ${fill}% · <span style="color:${legColor};font-weight:700">${legCost}m</span></div>
+        </div>
+        <span class="stop-priority ${pClass}">${pText}</span>
+      </div>`;
+  }).join('');
+}
+
+function generateRoute(options = {}) {
+  const { silent = false, save = true } = options;
+  if (!bins.length) return null;
 
   const sorted = calculateShortestRoute();
   if (sorted.length === 0) {
     resetRoutePanel('Toplanacak kova yok.<br/>Tüm kovalar %10 eşiğinin altında.');
-    showToast('Tüm kovalar zaten boş (%10 altı).', 'warning');
-    return;
+    if (!silent) showToast('Tüm kovalar zaten boş (%10 altı).', 'warning');
+    return null;
   }
 
   currentRoute = sorted;
@@ -1460,58 +1717,39 @@ function generateRoute() {
   routeEmpty.classList.add('hidden');
   routeList.classList.remove('hidden');
   routeInfo.classList.remove('hidden');
+  if (mapRouteEmpty) mapRouteEmpty.classList.add('hidden');
+  if (mapRouteList) mapRouteList.classList.remove('hidden');
+  if (mapRouteInfo) mapRouteInfo.classList.remove('hidden');
+  if (mapRouteCompletion) mapRouteCompletion.classList.add('hidden');
 
-  routeList.innerHTML = '';
-  sorted.forEach((bin, i) => {
-    const fill = avgFill(bin), status = binStatus(fill);
-    const pClass = status === 'critical' ? 'badge-critical' : status === 'warning' ? 'badge-warning' : 'badge-ok';
-    const pText = status === 'critical' ? 'Kritik' : status === 'warning' ? 'Orta' : 'Düşük';
-
-    // Find graph cost for this leg
-    const fromKey = i === 0 ? 'depot' : getBinNodeKey(sorted[i - 1]);
-    const toKey = getBinNodeKey(bin);
-    const { dist } = dijkstra(fromKey);
-    const legCost = Math.round(dist[toKey] || 0);
-    const legColor = LEG_COLORS[i % LEG_COLORS.length];
-
-    const stop = document.createElement('div');
-    stop.className = 'route-stop';
-    stop.innerHTML = `
-      <div class="stop-num" style="background:${legColor};color:#0c0a09">${i + 1}</div>
-      <div class="stop-body">
-        <div class="stop-name">${bin.location_icon} ${bin.location}</div>
-        <div class="stop-fill">Doluluk: ${fill}% · <span style="color:${legColor};font-weight:700">${legCost}m</span></div>
-      </div>
-      <span class="stop-priority ${pClass}">${pText}</span>`;
-    routeList.appendChild(stop);
-  });
+  const routeStopsHtml = buildRouteStopsHtml(sorted);
+  routeList.innerHTML = routeStopsHtml;
+  if (mapRouteList) mapRouteList.innerHTML = routeStopsHtml;
 
   const totalGraphCost = graphRouteTotalCost(['depot', ...sorted.map(b => getBinNodeKey(b))]);
+  const routeMetric = calculateCollectionTimeMetric(sorted, totalFill, 'planned', totalGraphCost);
 
   // Show alternatives summary in route panel
   renderAltSummary(altRoutes, totalGraphCost);
 
-  const minutes = Math.max(5, Math.round(totalGraphCost / 7) + sorted.length * 4);
-  routeTime.textContent = `~${minutes} dk (${totalGraphCost}m toplam)`;
+  routeTime.textContent = `~${routeMetric.total_minutes} dk (${totalGraphCost}m toplam)`;
   routeWaste.textContent = `~${Math.round(totalFill * 1.2)} L`;
+  if (routeDailyTime) routeDailyTime.textContent = formatCollectionTimeMetric(routeMetric);
+  if (mapRouteTime) mapRouteTime.textContent = `~${routeMetric.total_minutes} dk (${totalGraphCost}m toplam)`;
+  if (mapRouteWaste) mapRouteWaste.textContent = `~${Math.round(totalFill * 1.2)} L`;
+  if (mapRouteDailyTime) mapRouteDailyTime.textContent = formatCollectionTimeMetric(routeMetric);
   updateMapSummary();
 
   startRouteAnimation();
-  showToast(`✅ En kısa rota (${totalGraphCost}m) bulundu${altRoutes.length > 0 ? ` — ${altRoutes.length} alternatif` : ''}!`, 'success');
-  saveRoutePlan(sorted, totalFill);
+  if (!silent) {
+    showToast(`✅ En kısa rota (${totalGraphCost}m) bulundu${altRoutes.length > 0 ? ` — ${altRoutes.length} alternatif` : ''}!`, 'success');
+  }
+  if (save) saveRoutePlan(sorted, totalFill, routeMetric);
+  return { sorted, totalFill, routeMetric, totalGraphCost, altRoutes };
 }
 
-// ── Render alt routes summary into route panel ──
-function renderAltSummary(alts, bestCost) {
-  // Remove existing summary if any
-  const old = document.getElementById('altSummary');
-  if (old) old.remove();
-  if (!alts || alts.length === 0) return;
-
-  const wrap = document.createElement('div');
-  wrap.id = 'altSummary';
-  wrap.className = 'alt-summary';
-  wrap.innerHTML = `
+function buildAltSummaryContent(alts, bestCost) {
+  return `
     <div class="alt-summary-title">Alternatif Rotalar (${alts.length})</div>
     ${alts.map((alt, idx) => {
       const meta = ALT_STYLES[idx % ALT_STYLES.length];
@@ -1526,16 +1764,37 @@ function renderAltSummary(alts, bestCost) {
           <span class="alt-dot" style="background:${meta.color}"></span>
           <div class="alt-body">
             <div class="alt-order">${order}</div>
-            <div class="alt-meta">${Math.round(alt.cost)}m · <span style="color:${meta.color}">${diffLabel}</span></div>
+            <div class="alt-meta">
+              ${escapeHtml(alt.strategy || 'Alternatif')} · ${Math.round(alt.cost)}m · ${alt.metric?.total_minutes || '–'} dk/gün ·
+              <span style="color:${meta.color}">${diffLabel}</span>
+            </div>
           </div>
         </div>`;
     }).join('')}
   `;
-  // Insert after route list
-  routeList.insertAdjacentElement('afterend', wrap);
 }
 
-async function saveRoutePlan(sorted, totalFill) {
+// ── Render alt routes summary into route panels ──
+function renderAltSummary(alts, bestCost) {
+  // Remove existing summary if any
+  const old = document.getElementById('altSummary');
+  if (old) old.remove();
+  if (!alts || alts.length === 0) {
+    if (mapAltSummary) mapAltSummary.innerHTML = '<p class="history-empty">Bu rota için alternatif bulunamadı.</p>';
+    return;
+  }
+
+  const content = buildAltSummaryContent(alts, bestCost);
+  const wrap = document.createElement('div');
+  wrap.id = 'altSummary';
+  wrap.className = 'alt-summary';
+  wrap.innerHTML = content;
+  // Insert after route list
+  routeList.insertAdjacentElement('afterend', wrap);
+  if (mapAltSummary) mapAltSummary.innerHTML = content;
+}
+
+async function saveRoutePlan(sorted, totalFill, routeMetric = null) {
   if (IS_DEMO || !supabaseClient) return;
   try {
     await supabaseClient.from('route_plans').insert({
@@ -1543,19 +1802,28 @@ async function saveRoutePlan(sorted, totalFill) {
       total_fill_score: totalFill,
       status: 'pending'
     });
+    await saveDailyCollectionTimeMetric(sorted, totalFill, 'planned', routeMetric);
   } catch (e) { console.warn('Rota kaydedilemedi:', e.message); }
 }
 
 // ── Start Route ──────────────────────────────────────────────────
-document.getElementById('btnStartRoute').addEventListener('click', async () => {
+async function startCurrentRoute() {
   if (!currentRoute.length) return;
-  for (const bin of currentRoute) {
+  const routeBeforeCollection = [...currentRoute];
+  const totalFillBeforeCollection = routeBeforeCollection.reduce((sum, bin) => sum + avgFill(bin), 0);
+  const completedMetric = calculateCollectionTimeMetric(routeBeforeCollection, totalFillBeforeCollection, 'completed');
+  for (const bin of routeBeforeCollection) {
     if (avgFill(bin) > 10) await collectBin(bin.id, false);
   }
+  await saveDailyCollectionTimeMetric(routeBeforeCollection, totalFillBeforeCollection, 'completed', completedMetric);
   showToast('🚛 Rota tamamlandı! Tüm kovalar boşaltıldı.', 'success');
-  addHistoryItem('Rota Tamamlandı', `${currentRoute.length} kova toplandı`);
+  addHistoryItem('Rota Tamamlandı', `${routeBeforeCollection.length} kova toplandı · ${completedMetric.total_minutes} dk/gün`);
   resetRoutePanel(ROUTE_EMPTY_DEFAULT_HTML);
-});
+  showMapRouteCompletion(routeBeforeCollection.length, completedMetric);
+}
+
+document.getElementById('btnStartRoute')?.addEventListener('click', startCurrentRoute);
+document.getElementById('btnMapStartRoute')?.addEventListener('click', startCurrentRoute);
 
 // ══════════════════════════════════════════════════════════════════
 // COLLECT
@@ -1616,7 +1884,7 @@ async function loadCollectionHistory() {
     if (error || !data || data.length === 0) return;
     collectionCount = data.length;
     valCollections.textContent = collectionCount;
-    historyList.innerHTML = '';
+    getHistoryLists().forEach(list => { list.innerHTML = ''; });
     data.forEach(ev => {
       const binName = ev.bins ? `${ev.bins.location_icon} ${ev.bins.name}` : 'Bilinmeyen';
       const time = new Date(ev.collected_at).toLocaleString('tr-TR');
@@ -1627,16 +1895,281 @@ async function loadCollectionHistory() {
   }
 }
 
+function getHistoryLists() {
+  return [historyList, mapHistoryList].filter(Boolean);
+}
+
 function addHistoryItem(title, meta, prepend = true) {
-  const p = historyList.querySelector('.history-empty');
-  if (p) p.remove();
-  const item = document.createElement('div');
-  item.className = 'history-item';
-  item.innerHTML = `
-    <div class="history-item-title">🚛 ${title}</div>
-    <div class="history-item-meta">${meta}</div>`;
-  if (prepend) historyList.prepend(item);
-  else historyList.appendChild(item);
+  getHistoryLists().forEach(list => {
+    const p = list.querySelector('.history-empty');
+    if (p) p.remove();
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.innerHTML = `
+      <div class="history-item-title">🚛 ${escapeHtml(title)}</div>
+      <div class="history-item-meta">${escapeHtml(meta)}</div>`;
+    if (prepend) list.prepend(item);
+    else list.appendChild(item);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// GAMIFICATION
+// ══════════════════════════════════════════════════════════════════
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function resetDemoStudents() {
+  students = DEFAULT_STUDENTS.map(student => ({ ...student }));
+  gamificationRemoteAvailable = false;
+}
+
+function getLeaderboardLists() {
+  return [leaderboardList, mapLeaderboardList].filter(Boolean);
+}
+
+function getFeedLists() {
+  return [feedList, mapFeedList].filter(Boolean);
+}
+
+function renderLeaderboard() {
+  const lists = getLeaderboardLists();
+  if (!lists.length) return;
+  if (!students.length) {
+    lists.forEach(list => {
+      list.innerHTML = '<p class="history-empty">Öğrenci verisi bulunamadı.</p>';
+    });
+    return;
+  }
+
+  const medals = ['🥇', '🥈', '🥉'];
+  const html = [...students]
+    .sort((a, b) => Number(b.total_points || 0) - Number(a.total_points || 0))
+    .map((student, index) => {
+      const rank = medals[index] || `#${index + 1}`;
+      return `
+        <div class="student-item">
+          <div class="student-main">
+            <div class="student-name"><span class="student-rank">${rank}</span>${escapeHtml(student.full_name)}</div>
+            <div class="student-card">${escapeHtml(student.card_id || 'Kart yok')}</div>
+          </div>
+          <div class="student-points">${Number(student.total_points || 0)} puan</div>
+        </div>`;
+    }).join('');
+  lists.forEach(list => { list.innerHTML = html; });
+}
+
+function renderFeedItems(rows) {
+  const lists = getFeedLists();
+  if (!lists.length) return;
+  if (!rows || rows.length === 0) {
+    lists.forEach(list => {
+      list.innerHTML = '<p class="history-empty">Henüz puan hareketi yok.</p>';
+    });
+    return;
+  }
+  lists.forEach(list => { list.innerHTML = ''; });
+  rows.forEach(row => addFeedItem(row, false));
+}
+
+function addFeedItem(row, prepend = true) {
+  const lists = getFeedLists();
+  if (!lists.length) return;
+  const categoryLabel = CAT_NAMES[row.waste_category] || row.waste_category || 'Atık';
+  const place = row.location_icon
+    ? `${row.location_icon} ${row.location || 'Kampüs'}`
+    : (row.location || 'Kampüs');
+  const time = row.created_at
+    ? new Date(row.created_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })
+    : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+
+  const html = `
+    <div class="feed-item-title">
+      <div class="feed-main">
+        <div class="feed-name">${escapeHtml(row.full_name || 'Öğrenci')}</div>
+        <div class="feed-meta">${escapeHtml(place)} · ${escapeHtml(categoryLabel)} · ${time}</div>
+      </div>
+      <div class="feed-score">+${Number(row.points_awarded || 0)}</div>
+    </div>`;
+
+  lists.forEach(list => {
+    const empty = list.querySelector('.history-empty');
+    if (empty) empty.remove();
+    const item = document.createElement('div');
+    item.className = 'feed-item';
+    item.innerHTML = html;
+    if (prepend) list.prepend(item);
+    else list.appendChild(item);
+
+    while (list.children.length > 10) {
+      list.removeChild(list.lastChild);
+    }
+  });
+}
+
+function normalizeTransaction(row) {
+  return {
+    created_at: row.created_at,
+    waste_category: row.waste_category,
+    points_awarded: row.points_awarded,
+    full_name: row.students?.full_name || row.student_name || 'Öğrenci',
+    location: row.bins?.location || row.location || 'Kampüs',
+    location_icon: row.bins?.location_icon || row.location_icon || '',
+  };
+}
+
+async function loadGamificationData() {
+  if (IS_DEMO || !supabaseClient) {
+    resetDemoStudents();
+    renderLeaderboard();
+    renderFeedItems([]);
+    updateGamificationStatus('demo', 'Demo puan verisi');
+    return;
+  }
+
+  const loaded = await loadStudents();
+  if (!loaded) {
+    resetDemoStudents();
+    renderLeaderboard();
+    renderFeedItems([]);
+    updateGamificationStatus('error', 'Puan tabloları okunamadı');
+    return;
+  }
+
+  await loadWasteTransactionFeed();
+}
+
+async function loadStudents() {
+  if (IS_DEMO || !supabaseClient) return false;
+  try {
+    const { data, error } = await supabaseClient
+      .from('students')
+      .select('id,card_id,full_name,total_points')
+      .order('total_points', { ascending: false });
+    if (error || !data) {
+      gamificationRemoteAvailable = false;
+      console.warn('Öğrenci puanları yüklenemedi:', error?.message);
+      return false;
+    }
+    students = data.map(student => ({
+      ...student,
+      total_points: Number(student.total_points || 0),
+    }));
+    gamificationRemoteAvailable = true;
+    updateGamificationStatus('connected', `DB: ${students.length} öğrenci`);
+    renderLeaderboard();
+    return true;
+  } catch (e) {
+    gamificationRemoteAvailable = false;
+    console.warn('Öğrenci puanları yüklenemedi:', e.message);
+    return false;
+  }
+}
+
+async function loadWasteTransactionFeed() {
+  if (!gamificationRemoteAvailable || !supabaseClient) {
+    renderFeedItems([]);
+    return;
+  }
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('waste_transactions')
+      .select('created_at,waste_category,points_awarded,students(full_name),bins(location,location_icon)')
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (error || !data) {
+      console.warn('Puan hareketleri yüklenemedi:', error?.message);
+      renderFeedItems([]);
+      return;
+    }
+    renderFeedItems(data.map(normalizeTransaction));
+  } catch (e) {
+    console.warn('Puan hareketleri yüklenemedi:', e.message);
+    renderFeedItems([]);
+  }
+}
+
+function addGamificationCandidate(candidates, bin, cat, previousLevel, nextLevel) {
+  const delta = Math.round(Number(nextLevel) - Number(previousLevel));
+  if (delta <= 0) return;
+  candidates.push({ bin, category: cat.category, delta });
+}
+
+function selectGamificationCandidate(candidates) {
+  if (!candidates.length) return null;
+  return [...candidates].sort((a, b) => b.delta - a.delta)[0];
+}
+
+async function recordTopGamificationCandidate(candidates) {
+  const candidate = selectGamificationCandidate(candidates);
+  if (!candidate) return;
+  await recordGamificationEvent(candidate.bin, candidate.category);
+}
+
+async function recordGamificationEvent(bin, category) {
+  if (!students.length) {
+    resetDemoStudents();
+  }
+
+  const student = students[Math.floor(Math.random() * students.length)];
+  if (!student) return;
+
+  const points = POINTS_MAP[category] || 3;
+  const previousPoints = Number(student.total_points || 0);
+  const nextPoints = previousPoints + points;
+  student.total_points = nextPoints;
+
+  const feedRow = {
+    created_at: new Date().toISOString(),
+    waste_category: category,
+    points_awarded: points,
+    full_name: student.full_name,
+    location: bin.location,
+    location_icon: bin.location_icon,
+  };
+
+  renderLeaderboard();
+  addFeedItem(feedRow);
+
+  if (!gamificationRemoteAvailable || !supabaseClient || String(student.id || '').startsWith('demo-')) {
+    updateGamificationStatus('demo', 'Demo puan verisi');
+    return;
+  }
+
+  try {
+    const { error: updateErr } = await supabaseClient
+      .from('students')
+      .update({ total_points: nextPoints })
+      .eq('id', student.id);
+    if (updateErr) throw new Error(updateErr.message);
+
+    const { error: insertErr } = await supabaseClient
+      .from('waste_transactions')
+      .insert({
+        student_id: student.id,
+        bin_id: bin.id,
+        waste_category: category,
+        points_awarded: points,
+      });
+    if (insertErr) throw new Error(insertErr.message);
+
+    updateGamificationStatus('connected', `DB: ${students.length} öğrenci`);
+    if (previousPoints < 50 && nextPoints >= 50) {
+      showToast(`${student.full_name} 50 puanı geçti; ödül kazandı.`, 'success');
+    }
+  } catch (e) {
+    gamificationRemoteAvailable = false;
+    updateGamificationStatus('error', 'Puan DB yazımı başarısız');
+    console.warn('Puan hareketi kaydedilemedi:', e.message);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1717,19 +2250,70 @@ function setupEventListeners() {
   });
 
   document.getElementById('autoFillToggle').addEventListener('change', e => {
-    const status = document.getElementById('autoFillStatus');
     if (e.target.checked) {
-      status.textContent = 'Açık';
-      autoFillTimer = setInterval(() => {
-        const delta = Math.floor(Math.random() * 8) + 2;
-        applySimulationAll(delta);
-      }, 5000);
+      startAutoFill();
     } else {
-      status.textContent = 'Kapalı';
-      clearInterval(autoFillTimer);
-      autoFillTimer = null;
+      stopAutoFill();
     }
   });
+}
+
+function startAutoFill(options = {}) {
+  const { persist = true } = options;
+  stopAutoFill(false, { persist: false });
+  if (persist) writeStoredAutoFillEnabled(true);
+  autoFillRunId += 1;
+  const runId = autoFillRunId;
+  updateAutoFillStatus('running', 'İlk artış kaydediliyor...');
+  runAutoFillTick(runId);
+  autoFillTimer = setInterval(() => runAutoFillTick(runId), 5000);
+}
+
+function stopAutoFill(updateStatus = true, options = {}) {
+  const { persist = true } = options;
+  autoFillRunId += 1;
+  if (autoFillTimer) clearInterval(autoFillTimer);
+  autoFillTimer = null;
+  autoFillInFlight = false;
+  if (persist) {
+    writeStoredAutoFillEnabled(false);
+    writeStoredAutoFillDetail('Otomatik artış durdu.');
+  }
+  if (updateStatus) updateAutoFillStatus('off', 'Otomatik artış durdu.');
+}
+
+async function runAutoFillTick(runId = autoFillRunId) {
+  const toggle = document.getElementById('autoFillToggle');
+  if (runId !== autoFillRunId || !toggle?.checked || autoFillInFlight) return;
+
+  autoFillInFlight = true;
+  const delta = Math.floor(Math.random() * 8) + 2;
+  updateAutoFillStatus('saving', `+${delta}% artış DB'ye yazılıyor...`);
+
+  try {
+    await applySimulationAll(delta, { silent: true, source: 'auto' });
+    const time = new Date().toLocaleTimeString('tr-TR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    if (runId === autoFillRunId && toggle.checked) {
+      const detail = `Son kayıt: ${time} · +${delta}%`;
+      writeStoredAutoFillDetail(detail);
+      updateAutoFillStatus('running', detail);
+    }
+  } catch (e) {
+    console.warn('Otomatik artış kaydedilemedi:', e.message);
+    if (runId === autoFillRunId && toggle.checked) {
+      const detail = `Son kayıt başarısız: ${e.message}`;
+      writeStoredAutoFillDetail(detail);
+      updateAutoFillStatus('error', detail);
+    }
+  } finally {
+    if (runId === autoFillRunId) {
+      autoFillInFlight = false;
+    }
+  }
 }
 
 function buildScenarioControls() {
@@ -1770,6 +2354,7 @@ async function applySimulationScenario(scenarioId) {
   if (!scenario || !bins.length) return;
 
   const cards = Array.from(document.querySelectorAll('.sim-scenario-card'));
+  const gamificationCandidates = [];
   cards.forEach(card => { card.disabled = true; });
   try {
     resetRoutePanel(ROUTE_EMPTY_DEFAULT_HTML);
@@ -1777,7 +2362,10 @@ async function applySimulationScenario(scenarioId) {
       const key = getBinNodeKey(bin);
       if (!key || scenario.levels[key] === undefined) continue;
       for (const cat of (bin.categories || [])) {
-        await persistCategoryLevel(cat, scenarioCategoryLevel(scenario.levels[key], cat.category));
+        const previousLevel = parseFloat(cat.current_level);
+        const newLevel = scenarioCategoryLevel(scenario.levels[key], cat.category);
+        await persistCategoryLevel(cat, newLevel);
+        addGamificationCandidate(gamificationCandidates, bin, cat, previousLevel, newLevel);
       }
     }
 
@@ -1786,6 +2374,7 @@ async function applySimulationScenario(scenarioId) {
     buildSimBinControls();
     setActiveScenario(scenarioId);
     recordHistorySnapshotNow();
+    await recordTopGamificationCandidate(gamificationCandidates);
     generateRoute();
   } finally {
     cards.forEach(card => { card.disabled = false; });
@@ -1900,16 +2489,38 @@ async function persistCategoryLevel(cat, newLevel) {
         .from('waste_categories')
         .update({ current_level: newLevel, updated_at: new Date().toISOString() })
         .eq('id', cat.id);
-      if (error) console.warn('Kategori güncellenemedi:', error.message);
-    } catch (e) { console.warn('Kategori güncellenemedi:', e.message); }
+      if (error) {
+        console.warn('Kategori güncellenemedi:', error.message);
+        return false;
+      }
+    } catch (e) {
+      console.warn('Kategori güncellenemedi:', e.message);
+      return false;
+    }
   }
+  return true;
 }
 
 function refreshAfterSim(bin, recordHistory = true) {
   renderBins();
   updateStats();
+  drawMap();
   renderSimBinCard(bin);
   if (recordHistory) recordHistorySnapshotNow();
+}
+
+async function refreshRouteFromCurrentData(options = {}) {
+  if (!currentRoute.length) return null;
+  const result = generateRoute({ silent: true, save: false });
+  if (options.saveMetric && result?.sorted?.length) {
+    await saveDailyCollectionTimeMetric(
+      result.sorted,
+      result.totalFill,
+      options.source || 'auto',
+      result.routeMetric
+    );
+  }
+  return result;
 }
 
 async function applySimulationForCategory(binId, catName, delta) {
@@ -1917,9 +2528,13 @@ async function applySimulationForCategory(binId, catName, delta) {
   if (!bin) return;
   const cat = (bin.categories || []).find(c => c.category === catName);
   if (!cat) return;
+  const previousLevel = parseFloat(cat.current_level);
   const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
   await persistCategoryLevel(cat, newLevel);
   refreshAfterSim(bin);
+  const gamificationCandidates = [];
+  addGamificationCandidate(gamificationCandidates, bin, cat, previousLevel, newLevel);
+  await recordTopGamificationCandidate(gamificationCandidates);
 }
 
 async function applySimulationSetCategory(binId, catName, value) {
@@ -1927,9 +2542,13 @@ async function applySimulationSetCategory(binId, catName, value) {
   if (!bin) return;
   const cat = (bin.categories || []).find(c => c.category === catName);
   if (!cat) return;
+  const previousLevel = parseFloat(cat.current_level);
   const newLevel = Math.min(100, Math.max(0, value));
   await persistCategoryLevel(cat, newLevel);
   refreshAfterSim(bin);
+  const gamificationCandidates = [];
+  addGamificationCandidate(gamificationCandidates, bin, cat, previousLevel, newLevel);
+  await recordTopGamificationCandidate(gamificationCandidates);
 }
 
 async function applySimulationForBin(binId, delta) {
@@ -1937,33 +2556,53 @@ async function applySimulationForBin(binId, delta) {
   const bin = bins.find(b => b.id === binId);
   if (!bin) return;
 
+  const gamificationCandidates = [];
   const targetCats = catSel === 'all' ? bin.categories : bin.categories.filter(c => c.category === catSel);
   for (const cat of targetCats) {
+    const previousLevel = parseFloat(cat.current_level);
     const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
     await persistCategoryLevel(cat, newLevel);
+    addGamificationCandidate(gamificationCandidates, bin, cat, previousLevel, newLevel);
   }
 
   refreshAfterSim(bin);
+  await recordTopGamificationCandidate(gamificationCandidates);
 
   const action = delta > 0 ? `+${delta}%` : 'boşaltıldı';
   showToast(`⚡ ${bin.location}: ${action}`, delta < 0 ? 'warning' : 'success');
 }
 
-async function applySimulationAll(delta) {
+async function applySimulationAll(delta, options = {}) {
   const catSel = document.getElementById('simCatSelect').value;
+  const gamificationCandidates = [];
+  let failedWrites = 0;
   for (const bin of bins) {
     const targetCats = catSel === 'all' ? bin.categories : bin.categories.filter(c => c.category === catSel);
     for (const cat of targetCats) {
       const d = Math.floor(Math.random() * delta) + 1;
+      const previousLevel = parseFloat(cat.current_level);
       const newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + d));
-      await persistCategoryLevel(cat, newLevel);
+      const saved = await persistCategoryLevel(cat, newLevel);
+      if (!saved) failedWrites++;
+      addGamificationCandidate(gamificationCandidates, bin, cat, previousLevel, newLevel);
     }
     renderSimBinCard(bin);
   }
   renderBins();
   updateStats();
-  recordHistorySnapshotNow();
-  showToast(`⚡ Rastgele: +${delta}% dolduruldu`, 'success');
+  drawMap();
+  await recordHistorySnapshotNow();
+  await recordTopGamificationCandidate(gamificationCandidates);
+  if (options.source === 'auto') {
+    await refreshRouteFromCurrentData({ saveMetric: true, source: 'auto' });
+  }
+  if (options.source === 'auto' && failedWrites > 0) {
+    throw new Error(`${failedWrites} kategori DB'ye yazılamadı`);
+  }
+  if (!options.silent) {
+    showToast(`⚡ Rastgele: +${delta}% dolduruldu`, 'success');
+  }
+  return { failedWrites, updatedCategories: gamificationCandidates.length };
 }
 
 // ══════════════════════════════════════════════════════════════════

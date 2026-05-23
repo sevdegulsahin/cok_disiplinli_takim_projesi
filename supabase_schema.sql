@@ -55,6 +55,51 @@ CREATE TABLE IF NOT EXISTS route_plans (
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed'))
 );
 
+-- Industrial engineering metric: daily estimated collection time.
+CREATE TABLE IF NOT EXISTS daily_collection_time_metrics (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  metric_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  calculated_at TIMESTAMPTZ DEFAULT NOW(),
+  source TEXT NOT NULL DEFAULT 'planned' CHECK (source IN ('planned', 'completed', 'auto')),
+  route_order JSONB NOT NULL DEFAULT '[]',
+  stop_count INTEGER NOT NULL DEFAULT 0,
+  route_distance_m NUMERIC(8,2) NOT NULL DEFAULT 0,
+  drive_minutes NUMERIC(8,2) NOT NULL DEFAULT 0,
+  service_minutes NUMERIC(8,2) NOT NULL DEFAULT 0,
+  fixed_minutes NUMERIC(8,2) NOT NULL DEFAULT 0,
+  total_minutes NUMERIC(8,2) NOT NULL DEFAULT 0,
+  total_fill_score NUMERIC(8,2) NOT NULL DEFAULT 0,
+  algorithm JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_collection_metrics_date
+  ON daily_collection_time_metrics (metric_date DESC, calculated_at DESC);
+
+-- Gamification: students and recycling transactions
+CREATE TABLE IF NOT EXISTS students (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  card_id TEXT UNIQUE NOT NULL,
+  full_name TEXT NOT NULL,
+  total_points INTEGER NOT NULL DEFAULT 0 CHECK (total_points >= 0),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE students ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS waste_transactions (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  student_id UUID REFERENCES students(id) ON DELETE CASCADE,
+  bin_id UUID REFERENCES bins(id) ON DELETE SET NULL,
+  waste_category TEXT NOT NULL CHECK (waste_category IN ('plastic', 'paper', 'organic', 'glass', 'metal')),
+  points_awarded INTEGER NOT NULL CHECK (points_awarded > 0),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_students_points ON students (total_points DESC);
+CREATE INDEX IF NOT EXISTS idx_waste_transactions_created_at ON waste_transactions (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_waste_transactions_student ON waste_transactions (student_id);
+
 -- -------------------------------------------------------
 -- INSERT DEFAULT DATA
 -- -------------------------------------------------------
@@ -93,6 +138,15 @@ INSERT INTO waste_categories (bin_id, category, current_level, color_hex, icon) 
   ('a1b2c3d4-0003-0003-0003-000000000003', 'metal',    35, '#6B7280', '🥫')
 ON CONFLICT DO NOTHING;
 
+-- Seed students for gamification; keep existing points if already present.
+INSERT INTO students (card_id, full_name, total_points) VALUES
+  ('CARD-001', 'Ahmet Yılmaz', 45),
+  ('CARD-002', 'Ayşe Demir', 20),
+  ('CARD-003', 'Mehmet Kaya', 12)
+ON CONFLICT (card_id) DO UPDATE
+SET full_name = EXCLUDED.full_name,
+    updated_at = NOW();
+
 -- -------------------------------------------------------
 -- REALTIME + Row Level Security (PUBLIC ACCESS FOR DEMO)
 -- -------------------------------------------------------
@@ -101,15 +155,24 @@ ALTER TABLE waste_categories  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE collection_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE route_plans       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bin_level_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_collection_time_metrics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE students          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waste_transactions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow all" ON bins;
 DROP POLICY IF EXISTS "Allow all" ON waste_categories;
 DROP POLICY IF EXISTS "Allow all" ON collection_events;
 DROP POLICY IF EXISTS "Allow all" ON route_plans;
 DROP POLICY IF EXISTS "Allow all" ON bin_level_history;
+DROP POLICY IF EXISTS "Allow all" ON daily_collection_time_metrics;
+DROP POLICY IF EXISTS "Allow all" ON students;
+DROP POLICY IF EXISTS "Allow all" ON waste_transactions;
 
 CREATE POLICY "Allow all" ON bins              FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON waste_categories  FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON collection_events FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON route_plans       FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON bin_level_history FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON daily_collection_time_metrics FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON students          FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON waste_transactions FOR ALL USING (true) WITH CHECK (true);
