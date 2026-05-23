@@ -95,3 +95,39 @@ CREATE POLICY "Allow all" ON bins FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON waste_categories FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON collection_events FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON route_plans FOR ALL USING (true) WITH CHECK (true);
+-- ── STUDENTS (GAMIFICATION) ──
+CREATE TABLE students (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    card_id VARCHAR(50) UNIQUE NOT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    total_points INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ── WASTE TRANSACTIONS (GAMIFICATION) ──
+CREATE TABLE waste_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    student_id UUID REFERENCES students(id) ON DELETE CASCADE,
+    bin_id UUID REFERENCES bins(id) ON DELETE CASCADE,
+    waste_category waste_type NOT NULL,
+    points_awarded INTEGER NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Enable RLS for gamification tables
+ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waste_transactions ENABLE ROW LEVEL SECURITY;
+
+-- Allow anonymous access for the sake of the frontend demo
+CREATE POLICY "Public read access for students" ON students FOR SELECT USING (true);
+CREATE POLICY "Public insert access for students" ON students FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public update access for students" ON students FOR UPDATE USING (true);
+
+CREATE POLICY "Public read access for waste_transactions" ON waste_transactions FOR SELECT USING (true);
+CREATE POLICY "Public insert access for waste_transactions" ON waste_transactions FOR INSERT WITH CHECK (true);
+
+-- Seed Data for Gamification
+INSERT INTO students (card_id, full_name, total_points) VALUES
+('CARD-001', 'Ahmet Yılmaz', 45),
+('CARD-002', 'Ayşe Demir', 20),
+('CARD-003', 'Mehmet Kaya', 12);

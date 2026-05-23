@@ -22,6 +22,19 @@ let collectionCount = 0;
 let autoFillTimer = null;
 let selectedBinId = null;        // for detail modal
 
+// Charts State
+let distChart = null;
+let weeklyChart = null;
+
+// ── Gamification State ───────────────────────────────────────────
+let students = [
+  { card_id: 'CARD-001', full_name: 'Ahmet Yılmaz', total_points: 45 },
+  { card_id: 'CARD-002', full_name: 'Ayşe Demir', total_points: 20 },
+  { card_id: 'CARD-003', full_name: 'Mehmet Kaya', total_points: 12 }
+];
+const POINTS_MAP = { metal: 10, glass: 7, plastic: 5, paper: 3, organic: 2 };
+
+
 // ── DOM refs ─────────────────────────────────────────────────────
 const binsGrid = document.getElementById('binsGrid');
 const valAvgFill = document.getElementById('valAvgFill');
@@ -47,6 +60,7 @@ async function init() {
   // 1. Her zaman anında demo veriyle göster (boş skeleton yok)
   renderBinsOffline();
   setupEventListeners();
+  initCharts();
 
   // 2. Supabase varsa arka planda yükle ve üzerine yaz
   if (!IS_DEMO) {
@@ -448,6 +462,58 @@ function addHistoryItem(title, meta, prepend = true) {
   else historyList.appendChild(item);
 }
 
+// ── Gamification Leaderboard ──────────────────────────────────────
+function renderLeaderboard() {
+  const leaderboardList = document.getElementById('leaderboardList');
+  if (!leaderboardList) return;
+  leaderboardList.innerHTML = '';
+  // Sort by points descending
+  const sorted = [...students].sort((a, b) => b.total_points - a.total_points);
+
+  sorted.forEach((stu, index) => {
+    const item = document.createElement('div');
+    item.className = 'student-item';
+    let medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '👤';
+
+    item.innerHTML = `
+      <div>
+        <div class="student-name">${medal} ${stu.full_name}</div>
+        <div class="student-card">Gerçek Zamanlı Takip</div>
+      </div>
+      <div class="student-points">${stu.total_points} Puan</div>
+    `;
+    leaderboardList.appendChild(item);
+  });
+}
+
+function addFeedItem(studentName, location, category, points) {
+  const feedList = document.getElementById('feedList');
+  if (!feedList) return;
+
+  const empty = feedList.querySelector('.history-empty');
+  if (empty) empty.remove();
+
+  const item = document.createElement('div');
+  item.className = 'history-item';
+  const timeStr = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  item.innerHTML = `
+    <div class="history-item-title" style="display:flex; justify-content:space-between;">
+      <span>👤 ${studentName}</span>
+      <span style="color:var(--primary); font-weight:800;">+${points}</span>
+    </div>
+    <div class="history-item-meta">${location} • ${category} • 🕒 ${timeStr}</div>
+  `;
+  feedList.prepend(item);
+
+  // Keep only last 10
+  while (feedList.children.length > 10) {
+    feedList.removeChild(feedList.lastChild);
+  }
+}
+
+
+
 // ── Simulation Modal ──────────────────────────────────────────────
 function setupEventListeners() {
   document.getElementById('btnSimulate').addEventListener('click', () => {
@@ -502,11 +568,36 @@ async function applySimulation(delta) {
 
   const targetBins = binSel === 'all' ? bins : bins.filter(b => b.id === binSel);
 
+  let maxAdded = 0;
+  let feedBinName = "Bir çöp kovası";
+  let feedCatName = "plastic"; // fallback
+
   for (const bin of targetBins) {
     const targetCats = catSel === 'all' ? bin.categories : bin.categories.filter(c => c.category === catSel);
 
     for (const cat of targetCats) {
-      let newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + delta));
+      let actualDelta = delta;
+
+      // Eşit artmaması için rastgeleleştirme (sadece atık eklenirken)
+      if (delta > 0) {
+        const multiplier = (Math.random() * 1.4) + 0.1; // 0.1x to 1.5x
+        actualDelta = Math.floor(delta * multiplier);
+
+        // "Tümü" seçiliyse %40 ihtimalle bazı kategorilere hiç atık atılmasın (daha organik)
+        if (catSel === 'all' && Math.random() < 0.4) {
+          actualDelta = 0;
+        }
+      }
+
+      if (actualDelta === 0 && delta > 0) continue;
+
+      let newLevel = Math.min(100, Math.max(0, parseFloat(cat.current_level) + actualDelta));
+
+      if (actualDelta > maxAdded) {
+        maxAdded = actualDelta;
+        feedBinName = bin.location;
+        feedCatName = cat.category;
+      }
 
       if (!IS_DEMO) {
         await supabaseClient
@@ -523,8 +614,33 @@ async function applySimulation(delta) {
   renderBins();
   updateStats();
 
-  const action = delta > 0 ? `+${delta}% dolduruldu` : delta < -50 ? 'boşaltıldı' : `${delta}% azaltıldı`;
-  showToast(`⚡ Simülasyon: ${action}`, delta < 0 ? 'warning' : 'success');
+  const action = delta > 0 ? `Sisteme atıklar organik olarak eklendi` : delta < -50 ? 'boşaltıldı' : `${delta}% azaltıldı`;
+
+  if (delta > 0 && maxAdded > 0) {
+    // Gamification hook: Auto-simulate a student throwing waste
+    const student = students[Math.floor(Math.random() * students.length)];
+    const points = POINTS_MAP[feedCatName] || 5;
+
+    const catLabels = { plastic: 'Plastik', paper: 'Kağıt', glass: 'Cam', metal: 'Metal', organic: 'Organik' };
+    const catLabel = catLabels[feedCatName] || 'Atık';
+
+    const wasBelow50 = student.total_points < 50;
+    student.total_points += points;
+    const isNowAbove50 = student.total_points >= 50;
+
+    renderLeaderboard();
+
+    // Add to live feed
+    addFeedItem(student.full_name, feedBinName, catLabel, points);
+
+    if (wasBelow50 && isNowAbove50) {
+      setTimeout(() => {
+        showToast(`${student.full_name.toUpperCase()}! 50 Puanı geçti, Kantinden 1 Çay Kazandı! `, 'success');
+      }, 1500);
+    }
+  } else if (delta < 0) {
+    showToast(`⚡ Simülasyon: ${action}`, delta < -50 ? 'success' : 'warning');
+  }
 }
 
 // ── Offline / Demo fallback ───────────────────────────────────────
@@ -579,3 +695,93 @@ function showToast(msg, type = 'success') {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.classList.add('hidden'); }, 3500);
 }
+
+// ── Charts Logic ─────────────────────────────────────────────────
+function initCharts() {
+  const ctxDist = document.getElementById('wasteDistributionChart');
+  if (ctxDist) {
+    distChart = new Chart(ctxDist, {
+      type: 'doughnut',
+      data: {
+        labels: ['Plastik', 'Kağıt', 'Cam', 'Metal', 'Organik'],
+        datasets: [{
+          data: [25, 30, 15, 10, 20], // Initial mock data
+          backgroundColor: ['#3B82F6', '#F59E0B', '#8B5CF6', '#6B7280', '#10B981'],
+          borderWidth: 0,
+          hoverOffset: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right', labels: { color: '#94a3b8', font: { family: "'Inter', sans-serif" } } }
+        },
+        cutout: '70%'
+      }
+    });
+  }
+
+  const ctxWeek = document.getElementById('weeklyRecyclingChart');
+  if (ctxWeek) {
+    weeklyChart = new Chart(ctxWeek, {
+      type: 'line',
+      data: {
+        labels: ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'],
+        datasets: [{
+          label: 'Toplanan Atık (kg)',
+          data: [45, 52, 38, 65, 48, 20, 15],
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52,211,153,0.1)',
+          borderWidth: 3,
+          pointBackgroundColor: '#34d399',
+          pointBorderColor: '#fff',
+          pointRadius: 4,
+          tension: 0.4,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' }, beginAtZero: true },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+        }
+      }
+    });
+  }
+}
+
+function updateChartsData() {
+  if (!distChart) return;
+
+  let totals = { plastic: 0, paper: 0, glass: 0, metal: 0, organic: 0 };
+  bins.forEach(bin => {
+    (bin.categories || []).forEach(cat => {
+      if (totals[cat.category] !== undefined) {
+        totals[cat.category] += parseFloat(cat.current_level || 0);
+      }
+    });
+  });
+
+  const sum = Object.values(totals).reduce((a, b) => a + b, 0);
+  if (sum > 0) {
+    distChart.data.datasets[0].data = [totals.plastic, totals.paper, totals.glass, totals.metal, totals.organic];
+    distChart.update();
+  }
+}
+
+// Override updateStats to also update charts
+const originalUpdateStats = updateStats;
+updateStats = function () {
+  originalUpdateStats();
+  updateChartsData();
+};
+
+// Render leaderboard on boot
+setTimeout(renderLeaderboard, 500);
+

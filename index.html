@@ -60,9 +60,10 @@
 
   <!-- ─── MAIN LAYOUT ─────────────────────────────────────── -->
   <main class="main-layout">
-
-    <!-- LEFT: Bins grid -->
-    <section class="bins-section">
+    
+    <div class="main-left">
+      <!-- LEFT: Bins grid -->
+      <section class="bins-section">
       <div class="section-header">
         <h1 class="section-title">Çöp Kovaları</h1>
         <p class="section-sub">Anlık doluluk ve atık ayrıştırma bilgisi</p>
@@ -74,6 +75,23 @@
         <div class="skeleton-card"></div>
       </div>
     </section>
+
+    <!-- Charts Section -->
+    <section class="charts-section" style="margin-top: 1.5rem;">
+      <div class="section-header">
+        <h2 class="section-title">📊 Geri Dönüşüm İstatistikleri</h2>
+        <div class="section-sub">Kampüs geneli atık ayrıştırma verileri</div>
+      </div>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <canvas id="wasteDistributionChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <canvas id="weeklyRecyclingChart"></canvas>
+        </div>
+      </div>
+    </section>
+    </div> <!-- /main-left -->
 
     <!-- RIGHT: Route panel -->
     <aside class="route-section">
@@ -102,8 +120,26 @@
         <button id="btnStartRoute" class="btn-start-route">🚛 Rotayı Başlat</button>
       </div>
 
-      <!-- Collection history -->
-      <div class="history-panel">
+        <!-- Gamification Leaderboard & Feed -->
+        <div class="panel leaderboard-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">🏆 Puan Durumu</h2>
+            <div style="font-size: 0.8rem; color: var(--text-muted)">Güncel Liderlik</div>
+          </div>
+          <div class="leaderboard-list" id="leaderboardList" style="margin-bottom: 1.5rem;">
+            <p class="history-empty">Öğrenci verisi bekleniyor...</p>
+          </div>
+          
+          <div class="panel-header">
+            <h2 class="panel-title">📡 Canlı Akış</h2>
+            <div style="font-size: 0.8rem; color: var(--primary)">● Canlı</div>
+          </div>
+          <div class="history-list" id="feedList">
+            <p class="history-empty">Henüz hareket yok.</p>
+          </div>
+        </div>
+
+        <div class="panel history-panel">
         <h3 class="history-title">📋 Toplama Geçmişi</h3>
         <div id="historyList" class="history-list">
           <p class="history-empty">Henüz toplama yapılmadı.</p>
@@ -179,9 +215,11 @@
   <!-- ─── TOAST ────────────────────────────────────────────── -->
   <div id="toast" class="toast hidden"></div>
 
+  <!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
           onerror="window.supabase=null"></script>
-  <script src="config.js?v=7"></script>
-  <script src="app.js?v=7"></script>
+  <script src="config.js?v=12"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
